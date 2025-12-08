@@ -21,6 +21,7 @@ Download the latest release for your platform from the `dist/` folder:
 | macOS ARM64 (Apple Silicon) | `aicli-darwin-arm64.zip` | M1/M2/M3 Macs |
 | Linux AMD64 | `aicli-linux-amd64.tar.gz` | Elementary OS, Ubuntu, Debian, etc. |
 | Linux ARM64 | `aicli-linux-arm64.tar.gz` | NVIDIA GB10 Grace, Raspberry Pi 4, etc. |
+| RHEL / Fedora | `aicli-0.1.0-1.x86_64.rpm` | RHEL 8/9, Fedora 38+ |
 | Windows AMD64 | `aicli-windows-amd64.zip` | Windows 10/11 64-bit |
 
 ### macOS (Apple Silicon)
@@ -43,6 +44,17 @@ sudo mv aicli /usr/local/bin/
 ```bash
 tar xzf aicli-linux-arm64.tar.gz
 sudo mv aicli /usr/local/bin/
+```
+
+### RHEL / Fedora
+
+```bash
+sudo rpm -i aicli-0.1.0-1.x86_64.rpm
+```
+
+Or with dnf:
+```bash
+sudo dnf install ./aicli-0.1.0-1.x86_64.rpm
 ```
 
 ### Windows

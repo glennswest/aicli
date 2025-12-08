@@ -1,15 +1,16 @@
 # aicli Build Makefile
-# Cross-platform builds for macOS ARM, Linux AMD64, Linux ARM64, Windows
+# Cross-platform builds for macOS ARM, Linux AMD64, Linux ARM64, Windows, RHEL/Fedora
 
 BINARY_NAME=aicli
 VERSION=$(shell cat VERSION 2>/dev/null || echo "0.0.1")
 BUILD_DIR=dist
+RPM_DIR=rpm
 LDFLAGS=-ldflags "-s -w -X main.version=$(VERSION)"
 
 # Build targets
-.PHONY: all clean darwin-arm64 linux-amd64 linux-arm64 windows-amd64 installers
+.PHONY: all clean darwin-arm64 linux-amd64 linux-arm64 windows-amd64 rpm installers
 
-all: darwin-arm64 linux-amd64 linux-arm64 windows-amd64
+all: darwin-arm64 linux-amd64 linux-arm64 windows-amd64 rpm
 
 # macOS ARM64 (Apple Silicon)
 darwin-arm64:
@@ -43,6 +44,15 @@ windows-amd64:
 	@cd $(BUILD_DIR)/windows-amd64 && zip -q ../$(BINARY_NAME)-windows-amd64.zip $(BINARY_NAME).exe
 	@echo "Created $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.zip"
 
+# RPM for RHEL/Fedora (requires rpmbuild)
+rpm: linux-amd64
+	@echo "Building RPM for RHEL/Fedora..."
+	@mkdir -p $(RPM_DIR)/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+	@cp $(BUILD_DIR)/linux-amd64/$(BINARY_NAME) $(RPM_DIR)/SOURCES/
+	@rpmbuild --define "_topdir $(CURDIR)/$(RPM_DIR)" --target x86_64 -bb $(RPM_DIR)/SPECS/$(BINARY_NAME).spec
+	@cp $(RPM_DIR)/RPMS/x86_64/$(BINARY_NAME)-$(VERSION)-1.x86_64.rpm $(BUILD_DIR)/
+	@echo "Created $(BUILD_DIR)/$(BINARY_NAME)-$(VERSION)-1.x86_64.rpm"
+
 # Create installer scripts
 installers:
 	@echo "Creating installer scripts..."
@@ -50,7 +60,7 @@ installers:
 	@cp scripts/install.ps1 $(BUILD_DIR)/ 2>/dev/null || true
 
 clean:
-	@rm -rf $(BUILD_DIR)
+	@rm -rf $(BUILD_DIR) $(RPM_DIR)/BUILD $(RPM_DIR)/RPMS $(RPM_DIR)/SRPMS
 	@echo "Cleaned build directory"
 
 # Build for current platform only
