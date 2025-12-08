@@ -5,6 +5,10 @@
 aicli
 *.exe
 dist/
+rpm/BUILD/
+rpm/RPMS/
+rpm/SRPMS/
+rpm/SOURCES/
 
 # IDE
 .idea/
