@@ -12,13 +12,76 @@ A command-line AI coding assistant with tool execution capabilities. Works with 
 
 ## Installation
 
+### Pre-built Binaries
+
+Download the latest release for your platform from the `dist/` folder:
+
+| Platform | File | Notes |
+|----------|------|-------|
+| macOS ARM64 (Apple Silicon) | `aicli-darwin-arm64.zip` | M1/M2/M3 Macs |
+| Linux AMD64 | `aicli-linux-amd64.tar.gz` | Elementary OS, Ubuntu, Debian, etc. |
+| Linux ARM64 | `aicli-linux-arm64.tar.gz` | NVIDIA GB10 Grace, Raspberry Pi 4, etc. |
+| Windows AMD64 | `aicli-windows-amd64.zip` | Windows 10/11 64-bit |
+
+### macOS (Apple Silicon)
+
 ```bash
-go build -o aicli .
+unzip aicli-darwin-arm64.zip
+sudo mv aicli /usr/local/bin/
+codesign --force --sign - /usr/local/bin/aicli
 ```
 
-On macOS, you may need to sign the binary:
+### Linux (Elementary OS, Ubuntu, etc.)
+
 ```bash
-codesign --force --sign - ./aicli
+tar xzf aicli-linux-amd64.tar.gz
+sudo mv aicli /usr/local/bin/
+```
+
+### Linux ARM64 (NVIDIA GB10 Grace)
+
+```bash
+tar xzf aicli-linux-arm64.tar.gz
+sudo mv aicli /usr/local/bin/
+```
+
+### Windows
+
+1. Extract `aicli-windows-amd64.zip`
+2. Move `aicli.exe` to a folder in your PATH, or run the installer:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+### Using Install Scripts
+
+**Linux/macOS:**
+```bash
+./install.sh
+```
+
+**Windows (PowerShell as Admin):**
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+### Build from Source
+
+Requires Go 1.24+:
+
+```bash
+# Build for current platform
+go build -o aicli .
+
+# Build all platforms
+make all
+
+# Build specific platform
+make darwin-arm64
+make linux-amd64
+make linux-arm64
+make windows-amd64
 ```
 
 ## Configuration

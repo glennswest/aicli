@@ -4,6 +4,7 @@
 # Build output
 aicli
 *.exe
+dist/
 
 # IDE
 .idea/
