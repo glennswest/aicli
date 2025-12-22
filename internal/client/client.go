@@ -67,6 +67,14 @@ type Client struct {
 	useTools   bool
 }
 
+type ModelsResponse struct {
+	Data []ModelInfo `json:"data"`
+}
+
+type ModelInfo struct {
+	ID string `json:"id"`
+}
+
 func New(cfg *config.Config) *Client {
 	return &Client{
 		cfg:        cfg,
@@ -74,6 +82,40 @@ func New(cfg *config.Config) *Client {
 		history:    make([]Message, 0),
 		useTools:   true,
 	}
+}
+
+func (c *Client) ListModels() ([]string, error) {
+	endpoint := strings.TrimSuffix(c.cfg.APIEndpoint, "/") + "/models"
+	httpReq, err := http.NewRequest("GET", endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	if c.cfg.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+	}
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch models: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var modelsResp ModelsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&modelsResp); err != nil {
+		return nil, fmt.Errorf("failed to decode models response: %w", err)
+	}
+
+	models := make([]string, len(modelsResp.Data))
+	for i, m := range modelsResp.Data {
+		models[i] = m.ID
+	}
+	return models, nil
 }
 
 func (c *Client) SetUseTools(use bool) {

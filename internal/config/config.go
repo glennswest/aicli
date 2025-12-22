@@ -99,3 +99,31 @@ func (c *Config) Save() error {
 
 	return os.WriteFile(path, data, 0600)
 }
+
+// AutoConfigModel selects the first available model if the current model
+// is "default" or not in the available models list. Returns true if changed.
+func (c *Config) AutoConfigModel(availableModels []string) bool {
+	if len(availableModels) == 0 {
+		return false
+	}
+
+	// Check if current model needs auto-configuration
+	needsConfig := c.Model == "default"
+	if !needsConfig {
+		// Check if current model exists in available models
+		found := false
+		for _, m := range availableModels {
+			if m == c.Model {
+				found = true
+				break
+			}
+		}
+		needsConfig = !found
+	}
+
+	if needsConfig {
+		c.Model = availableModels[0]
+		return true
+	}
+	return false
+}

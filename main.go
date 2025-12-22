@@ -78,6 +78,9 @@ func main() {
 		cfg.Temperature = temperature
 	}
 
+	// Auto-configure model if needed (handles "default" or model mismatch)
+	autoConfigModel(cfg)
+
 	workDir, _ := os.Getwd()
 	exec := executor.New(workDir)
 
@@ -257,5 +260,18 @@ func runInteractive(cfg *config.Config) {
 	if err := c.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+func autoConfigModel(cfg *config.Config) {
+	c := client.New(cfg)
+	models, err := c.ListModels()
+	if err != nil {
+		// Silently skip autoconfig if API is unavailable
+		return
+	}
+
+	if cfg.AutoConfigModel(models) {
+		fmt.Printf("Auto-configured model: %s\n", cfg.Model)
 	}
 }
