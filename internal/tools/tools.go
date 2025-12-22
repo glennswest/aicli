@@ -16,6 +16,7 @@ type Function struct {
 }
 
 type ToolCall struct {
+	Index    int    `json:"index"` // Used for streaming tool calls
 	ID       string `json:"id"`
 	Type     string `json:"type"`
 	Function struct {

@@ -68,6 +68,42 @@ func New(cfg *config.Config) (*Chat, error) {
 	}, nil
 }
 
+// NewNonInteractive creates a Chat instance for single-prompt mode without readline
+func NewNonInteractive(cfg *config.Config, autoExec bool) (*Chat, error) {
+	workDir, _ := os.Getwd()
+
+	exec := executor.New(workDir)
+	exec.InitVersion()
+
+	c := client.New(cfg)
+
+	// Auto-configure model if set to "default"
+	if cfg.Model == "default" {
+		if models, err := c.ListModels(); err == nil && len(models) > 0 {
+			if cfg.AutoConfigModel(models) {
+				cfg.Save()
+			}
+		}
+	}
+
+	return &Chat{
+		client:   c,
+		cfg:      cfg,
+		rl:       nil, // No readline for non-interactive mode
+		exec:     exec,
+		web:      web.NewSearch(),
+		recorder: session.NewRecorder(workDir),
+		autoExec: autoExec,
+	}, nil
+}
+
+// RunSingle executes a single prompt with full tool support
+func (c *Chat) RunSingle(prompt string) error {
+	c.recorder.RecordUser(prompt)
+	c.sendMessage(prompt)
+	return nil
+}
+
 func NewPlaybackMode(cfg *config.Config, sessionPath string) (*Chat, error) {
 	playback, err := session.NewPlayback(sessionPath)
 	if err != nil {

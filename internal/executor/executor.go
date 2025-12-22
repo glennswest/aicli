@@ -51,6 +51,10 @@ func (e *Executor) Run(command string) *Result {
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	cmd.Dir = e.workDir
 
+	// Inherit environment and add common tool paths
+	cmd.Env = os.Environ()
+	cmd.Env = append(cmd.Env, e.getExtendedPath())
+
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -264,4 +268,30 @@ func (r *Result) String() string {
 
 func (r *Result) Success() bool {
 	return r.ExitCode == 0
+}
+
+// getExtendedPath returns a PATH environment variable with common tool paths added
+func (e *Executor) getExtendedPath() string {
+	currentPath := os.Getenv("PATH")
+	// Common paths for Go, Rust, Node, Python, etc.
+	additionalPaths := []string{
+		"/usr/local/go/bin",
+		"/usr/local/bin",
+		"/opt/go/bin",
+		os.ExpandEnv("$HOME/go/bin"),
+		os.ExpandEnv("$HOME/.local/bin"),
+		os.ExpandEnv("$HOME/.cargo/bin"),
+		"/snap/bin",
+	}
+
+	// Build new PATH with additional paths prepended
+	var pathParts []string
+	for _, p := range additionalPaths {
+		if _, err := os.Stat(p); err == nil {
+			pathParts = append(pathParts, p)
+		}
+	}
+	pathParts = append(pathParts, currentPath)
+
+	return "PATH=" + strings.Join(pathParts, ":")
 }

@@ -20,40 +20,154 @@ type TextToolCall struct {
 	Arguments json.RawMessage `json:"arguments"`
 }
 
-// ParseToolCallsFromText extracts tool calls from <tool_call> tags in text
-func ParseToolCallsFromText(text string) ([]tools.ToolCall, string) {
-	re := regexp.MustCompile(`(?s)<tool_call>\s*(\{.*?\})\s*</tool_call>`)
-	matches := re.FindAllStringSubmatch(text, -1)
+// extractJSON extracts a complete JSON object from a string starting at the given position
+// It properly handles nested braces
+func extractJSON(s string, start int) (string, int) {
+	if start >= len(s) || s[start] != '{' {
+		return "", -1
+	}
 
+	depth := 0
+	inString := false
+	escaped := false
+
+	for i := start; i < len(s); i++ {
+		c := s[i]
+
+		if escaped {
+			escaped = false
+			continue
+		}
+
+		if c == '\\' && inString {
+			escaped = true
+			continue
+		}
+
+		if c == '"' {
+			inString = !inString
+			continue
+		}
+
+		if inString {
+			continue
+		}
+
+		if c == '{' {
+			depth++
+		} else if c == '}' {
+			depth--
+			if depth == 0 {
+				return s[start : i+1], i + 1
+			}
+		}
+	}
+
+	return "", -1
+}
+
+// knownToolNames contains all valid tool names for raw format parsing
+var knownToolNames = []string{
+	"run_command", "write_file", "write_doc", "read_file",
+	"web_search", "fetch_url", "screenshot",
+	"git_status", "git_diff", "git_add", "git_commit", "git_log",
+	"list_files", "get_version", "set_version",
+}
+
+// ParseToolCallsFromText extracts tool calls from text output
+// Supports two formats:
+// 1. <tool_call>{"name": "...", "arguments": {...}}</tool_call>
+// 2. tool_name\n{"arg": "value"} (raw format from some models)
+func ParseToolCallsFromText(text string) ([]tools.ToolCall, string) {
 	var toolCalls []tools.ToolCall
 	cleanedText := text
+	callIndex := 0
 
-	for i, match := range matches {
-		if len(match) < 2 {
+	// First try <tool_call> tag format
+	re := regexp.MustCompile(`(?s)<tool_call>\s*`)
+	closeTag := "</tool_call>"
+
+	for {
+		loc := re.FindStringIndex(cleanedText)
+		if loc == nil {
+			break
+		}
+
+		jsonStart := loc[1]
+		closeIdx := strings.Index(cleanedText[jsonStart:], closeTag)
+		if closeIdx == -1 {
+			break
+		}
+
+		content := strings.TrimSpace(cleanedText[jsonStart : jsonStart+closeIdx])
+		jsonStr, _ := extractJSON(content, 0)
+		if jsonStr == "" {
+			cleanedText = cleanedText[:loc[0]] + cleanedText[jsonStart+closeIdx+len(closeTag):]
 			continue
 		}
 
 		var tc TextToolCall
-		if err := json.Unmarshal([]byte(match[1]), &tc); err != nil {
+		if err := json.Unmarshal([]byte(jsonStr), &tc); err != nil {
+			cleanedText = cleanedText[:loc[0]] + cleanedText[jsonStart+closeIdx+len(closeTag):]
 			continue
 		}
 
 		toolCall := tools.ToolCall{
-			ID:   fmt.Sprintf("text_call_%d", i),
+			ID:   fmt.Sprintf("text_call_%d", callIndex),
 			Type: "function",
 		}
 		toolCall.Function.Name = tc.Name
 		toolCall.Function.Arguments = string(tc.Arguments)
 
 		toolCalls = append(toolCalls, toolCall)
-
-		// Remove the tool call from displayed text
-		cleanedText = strings.Replace(cleanedText, match[0], "", 1)
+		callIndex++
+		cleanedText = cleanedText[:loc[0]] + cleanedText[jsonStart+closeIdx+len(closeTag):]
 	}
 
-	// Clean up extra whitespace
-	cleanedText = strings.TrimSpace(cleanedText)
+	// Then try raw format: tool_name\n{JSON} or tool_name{JSON}
+	for _, toolName := range knownToolNames {
+		// Find tool_name followed by whitespace then {
+		pattern := regexp.MustCompile(`(?s)` + regexp.QuoteMeta(toolName) + `\s*\{`)
 
+		for {
+			match := pattern.FindStringIndex(cleanedText)
+			if match == nil {
+				break
+			}
+
+			// Find the start of JSON (the { character)
+			jsonStart := match[1] - 1 // -1 because the pattern includes {
+
+			// Use extractJSON to properly handle nested braces and strings
+			jsonStr, jsonEnd := extractJSON(cleanedText, jsonStart)
+			if jsonStr == "" {
+				// No valid JSON found, skip
+				break
+			}
+
+			// Validate it's proper JSON
+			var args map[string]interface{}
+			if err := json.Unmarshal([]byte(jsonStr), &args); err != nil {
+				// Invalid JSON, skip this match
+				break
+			}
+
+			toolCall := tools.ToolCall{
+				ID:   fmt.Sprintf("text_call_%d", callIndex),
+				Type: "function",
+			}
+			toolCall.Function.Name = toolName
+			toolCall.Function.Arguments = jsonStr
+
+			toolCalls = append(toolCalls, toolCall)
+			callIndex++
+
+			// Remove the matched text (tool_name + whitespace + JSON)
+			cleanedText = cleanedText[:match[0]] + cleanedText[jsonEnd:]
+		}
+	}
+
+	cleanedText = strings.TrimSpace(cleanedText)
 	return toolCalls, cleanedText
 }
 
@@ -315,16 +429,22 @@ func (c *Client) handleStreamResponse(body io.Reader, onToken func(string)) (*Ch
 
 			// Handle tool calls (streamed incrementally)
 			for _, tc := range choice.Delta.ToolCalls {
-				idx := tc.ID // Use ID as index for streaming
-				if idx == "" {
-					// Some APIs use index-based streaming
-					continue
-				}
-				if existing, ok := toolCallsMap[0]; ok {
+				idx := tc.Index // Use index for streaming tool calls
+				if existing, ok := toolCallsMap[idx]; ok {
+					// Append arguments to existing tool call
 					existing.Function.Arguments += tc.Function.Arguments
+					// Update ID if provided (some APIs send ID in first chunk only)
+					if tc.ID != "" {
+						existing.ID = tc.ID
+					}
 				} else {
+					// New tool call - store a copy
 					newTC := tc
-					toolCallsMap[0] = &newTC
+					// Generate an ID if not provided
+					if newTC.ID == "" {
+						newTC.ID = fmt.Sprintf("call_%d", idx)
+					}
+					toolCallsMap[idx] = &newTC
 				}
 			}
 

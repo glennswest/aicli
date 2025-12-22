@@ -207,13 +207,14 @@ func runSinglePrompt(cfg *config.Config, prompt string) {
 		}
 	}
 
-	c := client.New(cfg)
-	_, err := c.Complete(prompt, true, func(token string) {
-		fmt.Print(token)
-	})
-	fmt.Println()
-
+	// Use non-interactive Chat for tool support
+	c, err := chat.NewNonInteractive(cfg, autoMode)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := c.RunSingle(prompt); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
