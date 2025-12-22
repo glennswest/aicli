@@ -742,6 +742,11 @@ func (c *Chat) handleWriteFile(path, content, fileType string) string {
 }
 
 func (c *Chat) confirm(prompt string) bool {
+	// In non-interactive mode, there's no readline - decline unless autoExec is set
+	if c.rl == nil {
+		fmt.Printf("\033[33m%s [y/N]: \033[0m(no input in non-interactive mode, use -auto to auto-execute)\n", prompt)
+		return false
+	}
 	fmt.Printf("\033[33m%s [y/N]: \033[0m", prompt)
 	line, err := c.rl.Readline()
 	if err != nil {
