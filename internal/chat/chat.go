@@ -46,8 +46,19 @@ func New(cfg *config.Config) (*Chat, error) {
 	exec := executor.New(workDir)
 	exec.InitVersion()
 
+	c := client.New(cfg)
+
+	// Auto-configure model if set to "default"
+	if cfg.Model == "default" {
+		if models, err := c.ListModels(); err == nil && len(models) > 0 {
+			if cfg.AutoConfigModel(models) {
+				cfg.Save() // Save the selected model for future sessions
+			}
+		}
+	}
+
 	return &Chat{
-		client:   client.New(cfg),
+		client:   c,
 		cfg:      cfg,
 		rl:       rl,
 		exec:     exec,
@@ -65,8 +76,19 @@ func NewPlaybackMode(cfg *config.Config, sessionPath string) (*Chat, error) {
 
 	workDir, _ := os.Getwd()
 
+	c := client.New(cfg)
+
+	// Auto-configure model if set to "default"
+	if cfg.Model == "default" {
+		if models, err := c.ListModels(); err == nil && len(models) > 0 {
+			if cfg.AutoConfigModel(models) {
+				cfg.Save()
+			}
+		}
+	}
+
 	return &Chat{
-		client:   client.New(cfg),
+		client:   c,
 		cfg:      cfg,
 		exec:     executor.New(workDir),
 		web:      web.NewSearch(),
@@ -402,9 +424,13 @@ func extToLang(ext string) string {
 }
 
 func (c *Chat) sendMessage(msg string) {
+	tokenCount := 0
 	fmt.Print("\033[90mThinking...\033[0m")
 
-	result, err := c.client.Chat(msg, false, nil)
+	result, err := c.client.Chat(msg, true, func(token string) {
+		tokenCount++
+		fmt.Printf("\r\033[K\033[90mThinking... [%d tokens]\033[0m", tokenCount)
+	})
 
 	// Clear the "Thinking..." status
 	fmt.Print("\r\033[K")
@@ -412,6 +438,13 @@ func (c *Chat) sendMessage(msg string) {
 	if err != nil {
 		fmt.Printf("\033[31mError: %v\033[0m\n", err)
 		return
+	}
+
+	// Parse text-based tool calls from content
+	textToolCalls, cleanedContent := client.ParseToolCallsFromText(result.Content)
+	if len(textToolCalls) > 0 {
+		result.ToolCalls = append(result.ToolCalls, textToolCalls...)
+		result.Content = cleanedContent
 	}
 
 	if result.Content != "" {
@@ -428,12 +461,23 @@ func (c *Chat) sendMessage(msg string) {
 			c.client.AddToolResult(tc.ID, toolResult)
 		}
 
+		tokenCount = 0
 		fmt.Print("\033[90mThinking...\033[0m")
-		result, err = c.client.ContinueWithToolResults(false, nil)
+		result, err = c.client.ContinueWithToolResults(true, func(token string) {
+			tokenCount++
+			fmt.Printf("\r\033[K\033[90mThinking... [%d tokens]\033[0m", tokenCount)
+		})
 		fmt.Print("\r\033[K")
 		if err != nil {
 			fmt.Printf("\033[31mError: %v\033[0m\n", err)
 			return
+		}
+
+		// Parse text-based tool calls from continuation
+		textToolCalls, cleanedContent = client.ParseToolCallsFromText(result.Content)
+		if len(textToolCalls) > 0 {
+			result.ToolCalls = append(result.ToolCalls, textToolCalls...)
+			result.Content = cleanedContent
 		}
 
 		if result.Content != "" {

@@ -7,11 +7,55 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"aicli/internal/config"
 	"aicli/internal/tools"
 )
+
+// TextToolCall represents a tool call parsed from text output
+type TextToolCall struct {
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
+}
+
+// ParseToolCallsFromText extracts tool calls from <tool_call> tags in text
+func ParseToolCallsFromText(text string) ([]tools.ToolCall, string) {
+	re := regexp.MustCompile(`(?s)<tool_call>\s*(\{.*?\})\s*</tool_call>`)
+	matches := re.FindAllStringSubmatch(text, -1)
+
+	var toolCalls []tools.ToolCall
+	cleanedText := text
+
+	for i, match := range matches {
+		if len(match) < 2 {
+			continue
+		}
+
+		var tc TextToolCall
+		if err := json.Unmarshal([]byte(match[1]), &tc); err != nil {
+			continue
+		}
+
+		toolCall := tools.ToolCall{
+			ID:   fmt.Sprintf("text_call_%d", i),
+			Type: "function",
+		}
+		toolCall.Function.Name = tc.Name
+		toolCall.Function.Arguments = string(tc.Arguments)
+
+		toolCalls = append(toolCalls, toolCall)
+
+		// Remove the tool call from displayed text
+		cleanedText = strings.Replace(cleanedText, match[0], "", 1)
+	}
+
+	// Clean up extra whitespace
+	cleanedText = strings.TrimSpace(cleanedText)
+
+	return toolCalls, cleanedText
+}
 
 type Message struct {
 	Role       string           `json:"role"`
