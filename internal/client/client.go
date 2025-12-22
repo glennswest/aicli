@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"aicli/internal/config"
 	"aicli/internal/tools"
@@ -223,6 +226,8 @@ type Client struct {
 	httpClient *http.Client
 	history    []Message
 	useTools   bool
+	debugDir   string
+	requestNum int
 }
 
 type ModelsResponse struct {
@@ -235,11 +240,58 @@ type ModelInfo struct {
 
 func New(cfg *config.Config) *Client {
 	return &Client{
-		cfg:        cfg,
-		httpClient: &http.Client{},
-		history:    make([]Message, 0),
-		useTools:   true,
+		cfg: cfg,
+		httpClient: &http.Client{
+			Transport: &http.Transport{
+				ResponseHeaderTimeout: 60 * time.Second,
+			},
+		},
+		history:  make([]Message, 0),
+		useTools: true,
 	}
+}
+
+// NewWithDebug creates a client with debug logging enabled
+func NewWithDebug(cfg *config.Config, workDir string) *Client {
+	debugDir := filepath.Join(workDir, ".aicli", "debug")
+	os.MkdirAll(debugDir, 0755)
+
+	return &Client{
+		cfg: cfg,
+		httpClient: &http.Client{
+			Transport: &http.Transport{
+				ResponseHeaderTimeout: 60 * time.Second,
+			},
+		},
+		history:  make([]Message, 0),
+		useTools: true,
+		debugDir: debugDir,
+	}
+}
+
+// SetDebugDir enables debug logging to the specified directory
+func (c *Client) SetDebugDir(workDir string) {
+	c.debugDir = filepath.Join(workDir, ".aicli", "debug")
+	os.MkdirAll(c.debugDir, 0755)
+}
+
+// logDebug writes request/response data to debug files
+func (c *Client) logDebug(prefix string, data []byte) {
+	if c.debugDir == "" {
+		return
+	}
+
+	timestamp := time.Now().Format("20060102_150405")
+	filename := fmt.Sprintf("%s_%03d_%s.json", timestamp, c.requestNum, prefix)
+	filepath := filepath.Join(c.debugDir, filename)
+
+	// Pretty-print JSON if possible
+	var prettyJSON bytes.Buffer
+	if err := json.Indent(&prettyJSON, data, "", "  "); err == nil {
+		data = prettyJSON.Bytes()
+	}
+
+	os.WriteFile(filepath, data, 0644)
 }
 
 func (c *Client) ListModels() ([]string, error) {
@@ -317,6 +369,8 @@ func (c *Client) ContinueWithToolResults(stream bool, onToken func(string)) (*Ch
 }
 
 func (c *Client) sendRequest(stream bool, onToken func(string)) (*ChatResult, error) {
+	c.requestNum++
+
 	req := ChatRequest{
 		Model:       c.cfg.Model,
 		Messages:    c.history,
@@ -333,6 +387,9 @@ func (c *Client) sendRequest(stream bool, onToken func(string)) (*ChatResult, er
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
+
+	// Log the request
+	c.logDebug("request", body)
 
 	endpoint := strings.TrimSuffix(c.cfg.APIEndpoint, "/") + "/chat/completions"
 	httpReq, err := http.NewRequest("POST", endpoint, bytes.NewReader(body))
@@ -353,6 +410,7 @@ func (c *Client) sendRequest(stream bool, onToken func(string)) (*ChatResult, er
 
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
+		c.logDebug("error", bodyBytes)
 		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 
@@ -365,7 +423,9 @@ func (c *Client) sendRequest(stream bool, onToken func(string)) (*ChatResult, er
 		}
 	} else {
 		var chatResp ChatResponse
-		if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
+		respBody, _ := io.ReadAll(resp.Body)
+		c.logDebug("response", respBody)
+		if err := json.Unmarshal(respBody, &chatResp); err != nil {
 			return nil, fmt.Errorf("failed to decode response: %w", err)
 		}
 		result = &ChatResult{}
@@ -375,6 +435,11 @@ func (c *Client) sendRequest(stream bool, onToken func(string)) (*ChatResult, er
 			result.ToolCalls = choice.Message.ToolCalls
 			result.FinishReason = choice.FinishReason
 		}
+	}
+
+	// Log the final result (especially useful for streaming)
+	if resultJSON, err := json.Marshal(result); err == nil {
+		c.logDebug("result", resultJSON)
 	}
 
 	// Add assistant message to history

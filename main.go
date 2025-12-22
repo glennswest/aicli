@@ -274,5 +274,9 @@ func autoConfigModel(cfg *config.Config) {
 
 	if cfg.AutoConfigModel(models) {
 		fmt.Printf("Auto-configured model: %s\n", cfg.Model)
+		// Save to local project config
+		if err := cfg.Save(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to save config: %v\n", err)
+		}
 	}
 }

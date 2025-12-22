@@ -2,26 +2,30 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 )
 
 type Config struct {
-	APIEndpoint string `json:"api_endpoint"`
-	APIKey      string `json:"api_key"`
-	Model       string `json:"model"`
-	MaxTokens   int    `json:"max_tokens"`
-	Temperature float64 `json:"temperature"`
-	SystemPrompt string `json:"system_prompt"`
+	APIEndpoint  string  `json:"api_endpoint"`
+	APIKey       string  `json:"api_key"`
+	Model        string  `json:"model"`
+	MaxTokens    int     `json:"max_tokens"`
+	Temperature  float64 `json:"temperature"`
+	SystemPrompt string  `json:"system_prompt"`
+
+	// Internal: tracks which config file was loaded
+	loadedFrom string
 }
 
 func DefaultConfig() *Config {
 	return &Config{
-		APIEndpoint:  "http://localhost:8000/v1",
-		APIKey:       "",
-		Model:        "default",
-		MaxTokens:    4096,
-		Temperature:  0.7,
+		APIEndpoint: "http://localhost:8000/v1",
+		APIKey:      "",
+		Model:       "default",
+		MaxTokens:   4096,
+		Temperature: 0.7,
 		SystemPrompt: `You are an expert coding assistant. You MUST use tools to perform actions - never just show code in markdown blocks.
 
 CRITICAL: To perform ANY action, you MUST use this EXACT format:
@@ -56,7 +60,13 @@ RULES:
 	}
 }
 
-func ConfigPath() (string, error) {
+// LocalConfigPath returns the path to the local project config file
+func LocalConfigPath() string {
+	return filepath.Join(".aicli", "config.json")
+}
+
+// GlobalConfigPath returns the path to the global config file
+func GlobalConfigPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -64,13 +74,32 @@ func ConfigPath() (string, error) {
 	return filepath.Join(home, ".config", "aicli", "config.json"), nil
 }
 
+// ConfigPath returns the path to use for saving (prefers local if it exists)
+// Deprecated: use LocalConfigPath or GlobalConfigPath
+func ConfigPath() (string, error) {
+	return GlobalConfigPath()
+}
+
+// Load loads config, checking local first then falling back to global
 func Load() (*Config, error) {
-	path, err := ConfigPath()
+	// First check for local config in current directory
+	localPath := LocalConfigPath()
+	if data, err := os.ReadFile(localPath); err == nil {
+		cfg := DefaultConfig()
+		if err := json.Unmarshal(data, cfg); err != nil {
+			return nil, fmt.Errorf("invalid local config: %w", err)
+		}
+		cfg.loadedFrom = localPath
+		return cfg, nil
+	}
+
+	// Fall back to global config
+	globalPath, err := GlobalConfigPath()
 	if err != nil {
 		return DefaultConfig(), nil
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(globalPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return DefaultConfig(), nil
@@ -82,12 +111,30 @@ func Load() (*Config, error) {
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, err
 	}
+	cfg.loadedFrom = globalPath
 
 	return cfg, nil
 }
 
+// Save saves config to the local project directory
 func (c *Config) Save() error {
-	path, err := ConfigPath()
+	localPath := LocalConfigPath()
+	dir := filepath.Dir(localPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	data, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(localPath, data, 0600)
+}
+
+// SaveGlobal saves config to the global config directory
+func (c *Config) SaveGlobal() error {
+	path, err := GlobalConfigPath()
 	if err != nil {
 		return err
 	}
@@ -103,6 +150,11 @@ func (c *Config) Save() error {
 	}
 
 	return os.WriteFile(path, data, 0600)
+}
+
+// LoadedFrom returns the path the config was loaded from, or empty if defaults
+func (c *Config) LoadedFrom() string {
+	return c.loadedFrom
 }
 
 // AutoConfigModel selects the first available model if the current model

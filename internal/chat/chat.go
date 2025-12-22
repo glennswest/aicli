@@ -46,16 +46,7 @@ func New(cfg *config.Config) (*Chat, error) {
 	exec := executor.New(workDir)
 	exec.InitVersion()
 
-	c := client.New(cfg)
-
-	// Auto-configure model if set to "default"
-	if cfg.Model == "default" {
-		if models, err := c.ListModels(); err == nil && len(models) > 0 {
-			if cfg.AutoConfigModel(models) {
-				cfg.Save() // Save the selected model for future sessions
-			}
-		}
-	}
+	c := client.NewWithDebug(cfg, workDir)
 
 	return &Chat{
 		client:   c,
@@ -75,16 +66,7 @@ func NewNonInteractive(cfg *config.Config, autoExec bool) (*Chat, error) {
 	exec := executor.New(workDir)
 	exec.InitVersion()
 
-	c := client.New(cfg)
-
-	// Auto-configure model if set to "default"
-	if cfg.Model == "default" {
-		if models, err := c.ListModels(); err == nil && len(models) > 0 {
-			if cfg.AutoConfigModel(models) {
-				cfg.Save()
-			}
-		}
-	}
+	c := client.NewWithDebug(cfg, workDir)
 
 	return &Chat{
 		client:   c,
@@ -112,16 +94,7 @@ func NewPlaybackMode(cfg *config.Config, sessionPath string) (*Chat, error) {
 
 	workDir, _ := os.Getwd()
 
-	c := client.New(cfg)
-
-	// Auto-configure model if set to "default"
-	if cfg.Model == "default" {
-		if models, err := c.ListModels(); err == nil && len(models) > 0 {
-			if cfg.AutoConfigModel(models) {
-				cfg.Save()
-			}
-		}
-	}
+	c := client.NewWithDebug(cfg, workDir)
 
 	return &Chat{
 		client:   c,
@@ -462,10 +435,12 @@ func extToLang(ext string) string {
 func (c *Chat) sendMessage(msg string) {
 	tokenCount := 0
 	fmt.Print("\033[90mThinking...\033[0m")
+	os.Stdout.Sync()
 
 	result, err := c.client.Chat(msg, true, func(token string) {
 		tokenCount++
 		fmt.Printf("\r\033[K\033[90mThinking... [%d tokens]\033[0m", tokenCount)
+		os.Stdout.Sync()
 	})
 
 	// Clear the "Thinking..." status
@@ -499,9 +474,11 @@ func (c *Chat) sendMessage(msg string) {
 
 		tokenCount = 0
 		fmt.Print("\033[90mThinking...\033[0m")
+		os.Stdout.Sync()
 		result, err = c.client.ContinueWithToolResults(true, func(token string) {
 			tokenCount++
 			fmt.Printf("\r\033[K\033[90mThinking... [%d tokens]\033[0m", tokenCount)
+			os.Stdout.Sync()
 		})
 		fmt.Print("\r\033[K")
 		if err != nil {
