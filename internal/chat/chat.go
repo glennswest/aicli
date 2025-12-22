@@ -97,7 +97,7 @@ func (c *Chat) Run() error {
 
 	v, _ := c.exec.GetVersion()
 	fmt.Printf("AI Coding Assistant (v%s)\n", v.String())
-	fmt.Println("Commands: /help, /clear, /file, /auto, /sessions, /playback, /quit")
+	fmt.Println("Commands: /help, /clear, /file, /auto, /models, /model, /quit")
 	fmt.Printf("Working directory: %s\n", c.exec.WorkDir())
 	fmt.Printf("Session: %s\n\n", c.recorder.SessionPath())
 
@@ -290,6 +290,48 @@ func (c *Chat) handleCommand(cmd string) bool {
 	case "/config":
 		c.printConfig()
 
+	case "/models":
+		models, err := c.client.ListModels()
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			return false
+		}
+		fmt.Println("Available models:")
+		for _, m := range models {
+			if m == c.cfg.Model {
+				fmt.Printf("  * %s (current)\n", m)
+			} else {
+				fmt.Printf("    %s\n", m)
+			}
+		}
+
+	case "/model":
+		if len(parts) < 2 {
+			fmt.Printf("Current model: %s\n", c.cfg.Model)
+			return false
+		}
+		newModel := parts[1]
+		// Validate the model exists
+		models, err := c.client.ListModels()
+		if err != nil {
+			fmt.Printf("Error fetching models: %v\n", err)
+			return false
+		}
+		found := false
+		for _, m := range models {
+			if m == newModel {
+				found = true
+				break
+			}
+		}
+		if !found {
+			fmt.Printf("Model not found: %s\n", newModel)
+			fmt.Println("Use /models to list available models")
+			return false
+		}
+		c.cfg.Model = newModel
+		fmt.Printf("Switched to model: %s\n", newModel)
+
 	default:
 		fmt.Printf("Unknown command: %s\n", parts[0])
 	}
@@ -360,9 +402,12 @@ func extToLang(ext string) string {
 }
 
 func (c *Chat) sendMessage(msg string) {
-	fmt.Print("\033[32m")
+	fmt.Print("\033[90mThinking...\033[0m")
 
 	result, err := c.client.Chat(msg, false, nil)
+
+	// Clear the "Thinking..." status
+	fmt.Print("\r\033[K")
 
 	if err != nil {
 		fmt.Printf("\033[31mError: %v\033[0m\n", err)
@@ -373,7 +418,7 @@ func (c *Chat) sendMessage(msg string) {
 		fmt.Print(result.Content)
 		c.recorder.RecordAssistant(result.Content)
 	}
-	fmt.Print("\033[0m\n")
+	fmt.Println()
 
 	for len(result.ToolCalls) > 0 {
 		for _, tc := range result.ToolCalls {
@@ -383,8 +428,9 @@ func (c *Chat) sendMessage(msg string) {
 			c.client.AddToolResult(tc.ID, toolResult)
 		}
 
-		fmt.Print("\033[32m")
+		fmt.Print("\033[90mThinking...\033[0m")
 		result, err = c.client.ContinueWithToolResults(false, nil)
+		fmt.Print("\r\033[K")
 		if err != nil {
 			fmt.Printf("\033[31mError: %v\033[0m\n", err)
 			return
@@ -394,7 +440,7 @@ func (c *Chat) sendMessage(msg string) {
 			fmt.Print(result.Content)
 			c.recorder.RecordAssistant(result.Content)
 		}
-		fmt.Print("\033[0m\n")
+		fmt.Println()
 	}
 
 	fmt.Println()
@@ -608,8 +654,10 @@ func (c *Chat) handleWriteFile(path, content, fileType string) string {
 	}
 
 	if err := c.exec.WriteFile(path, content); err != nil {
+		fmt.Printf("\033[31mFailed to write %s: %v\033[0m\n", fileType, err)
 		return fmt.Sprintf("Failed to write %s: %v", fileType, err)
 	}
+	fmt.Printf("\033[32m✓ Wrote %s (%d bytes)\033[0m\n", path, len(content))
 	return fmt.Sprintf("Successfully wrote %d bytes to %s", len(content), path)
 }
 
@@ -641,6 +689,8 @@ Commands:
   /sessions        List recorded sessions
   /playback <file> Replay a session
   /config          Show current configuration
+  /models          List available models
+  /model [name]    Show or switch current model
 
 The AI can:
   - Execute shell commands (builds, tests, etc.)
