@@ -10,7 +10,13 @@ var ErrorRules = map[Language]string{
 - "missing go.sum entry" -> run "go mod tidy" to populate go.sum with all transitive dependencies
 - "build constraints exclude" -> check GOOS/GOARCH or build tags
 - IMPORTANT: After "go get <pkg>", ALWAYS run "go mod tidy" to ensure all transitive dependencies are in go.sum
-- After fixing, always re-run "go build" to verify`,
+- After fixing, always re-run "go build" to verify
+
+GO MODULE VERSIONS:
+- To find latest version of a module: go list -m -versions <module>@latest
+- Or use: go get <module>@latest to automatically get the latest version
+- Many modules use /v2, /v3 paths for major versions - check pkg.go.dev for correct import path
+- If "module not found" for a version, check what versions actually exist before guessing`,
 
 	LangPython: `PYTHON ERROR HANDLING:
 - "ModuleNotFoundError" -> run "pip install <package>" or "pip3 install <package>"
