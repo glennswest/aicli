@@ -7,7 +7,9 @@ var ErrorRules = map[Language]string{
 - "package X not found" -> run "go get <package>" to install dependency
 - "undefined: X" -> check imports, might need to add import or fix typo
 - "cannot find module" -> run "go mod tidy" to sync dependencies
+- "missing go.sum entry" -> run "go mod tidy" to populate go.sum with all transitive dependencies
 - "build constraints exclude" -> check GOOS/GOARCH or build tags
+- IMPORTANT: After "go get <pkg>", ALWAYS run "go mod tidy" to ensure all transitive dependencies are in go.sum
 - After fixing, always re-run "go build" to verify`,
 
 	LangPython: `PYTHON ERROR HANDLING:
