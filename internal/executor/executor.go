@@ -34,6 +34,32 @@ func New(workDir string) *Executor {
 	}
 }
 
+// CanCreateDirectories returns true if the working directory allows creating subdirectories.
+// This is only allowed in the home folder or a projects folder.
+func (e *Executor) CanCreateDirectories() bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+
+	// Normalize paths
+	workDir, _ := filepath.Abs(e.workDir)
+	home, _ = filepath.Abs(home)
+	projectsDir := filepath.Join(home, "projects")
+
+	// Allow if we're exactly in home folder
+	if workDir == home {
+		return true
+	}
+
+	// Allow if we're in or under projects folder
+	if strings.HasPrefix(workDir, projectsDir+string(filepath.Separator)) || workDir == projectsDir {
+		return true
+	}
+
+	return false
+}
+
 func (e *Executor) SetWorkDir(dir string) {
 	e.workDir = dir
 }
@@ -87,8 +113,20 @@ func (e *Executor) WriteFile(path, content string) error {
 	}
 
 	dir := filepath.Dir(fullPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
+
+	// Check if we need to create directories
+	if dir != e.workDir && dir != "." {
+		// Only create directories if we're in home or projects folder
+		if e.CanCreateDirectories() {
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				return fmt.Errorf("failed to create directory: %w", err)
+			}
+		} else {
+			// Not allowed to create subdirectories - check if dir exists
+			if _, err := os.Stat(dir); os.IsNotExist(err) {
+				return fmt.Errorf("cannot create subdirectory '%s': only allowed in home or projects folder. Use files directly in %s", filepath.Base(dir), e.workDir)
+			}
+		}
 	}
 
 	return os.WriteFile(fullPath, []byte(content), 0644)

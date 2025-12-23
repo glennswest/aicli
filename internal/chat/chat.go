@@ -600,7 +600,23 @@ func (c *Chat) executeTool(tc tools.ToolCall) string {
 		if result.Success() {
 			return fmt.Sprintf("Command succeeded:\n%s", output)
 		}
-		return fmt.Sprintf("Command failed (exit %d):\n%s", result.ExitCode, output)
+
+		// Command failed - inject a forced TODO to make the model address it
+		errorSummary := extractErrorSummary(output, a.Command)
+		return fmt.Sprintf(`COMMAND FAILED (exit %d)
+
+=== STOP - DO NOT PROCEED ===
+
+The command failed. You MUST fix this before continuing.
+
+REQUIRED TODO:
+1. [BLOCKING] Fix error: %s
+2. Re-run the command to verify the fix works
+
+DO NOT run subsequent commands or claim success until this is resolved.
+
+Full output:
+%s`, result.ExitCode, errorSummary, output)
 
 	case "write_file":
 		var a tools.WriteFileArgs
@@ -920,4 +936,76 @@ Configuration:
   Session:     %s
 `, c.cfg.APIEndpoint, c.cfg.Model, c.cfg.MaxTokens, c.cfg.Temperature,
 		c.exec.WorkDir(), v.String(), c.autoExec, c.recorder.SessionPath())
+}
+
+// extractErrorSummary extracts a concise error description from command output
+func extractErrorSummary(output, command string) string {
+	lines := strings.Split(output, "\n")
+
+	// Look for common error patterns
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Go errors
+		if strings.Contains(line, "undefined:") ||
+			strings.Contains(line, "cannot find") ||
+			strings.Contains(line, "no required module") ||
+			strings.Contains(line, "missing go.sum entry") {
+			return line
+		}
+
+		// Build errors
+		if strings.Contains(line, "error:") ||
+			strings.Contains(line, "Error:") ||
+			strings.Contains(line, "FAILED") ||
+			strings.Contains(line, "fatal:") {
+			return line
+		}
+
+		// Python errors
+		if strings.Contains(line, "ModuleNotFoundError") ||
+			strings.Contains(line, "ImportError") ||
+			strings.Contains(line, "SyntaxError") {
+			return line
+		}
+
+		// Node errors
+		if strings.Contains(line, "Cannot find module") ||
+			strings.Contains(line, "ERR!") {
+			return line
+		}
+
+		// Command not found
+		if strings.Contains(line, "command not found") ||
+			strings.Contains(line, "not found") {
+			return line
+		}
+	}
+
+	// Check for build-specific commands
+	if strings.Contains(command, "go build") {
+		return "Go build failed - check for compilation errors above"
+	}
+	if strings.Contains(command, "npm") || strings.Contains(command, "yarn") {
+		return "Node package operation failed"
+	}
+	if strings.Contains(command, "pip") {
+		return "Python package operation failed"
+	}
+	if strings.Contains(command, "cargo") {
+		return "Rust build failed"
+	}
+
+	// Default: first non-empty line or generic message
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" && len(line) < 200 {
+			return line
+		}
+	}
+
+	return "Command exited with non-zero status"
 }

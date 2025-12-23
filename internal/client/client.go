@@ -343,13 +343,11 @@ func (c *Client) AddSystemPrompt() {
 	if c.cfg.SystemPrompt != "" && len(c.history) == 0 {
 		prompt := c.cfg.SystemPrompt
 
-		// Detect language and append appropriate error handling rules
+		// Always add language-specific error handling rules
 		if c.workDir != "" {
 			langs := lang.DetectMultipleLanguages(c.workDir)
-			if len(langs) > 0 {
-				rules := lang.GetErrorRules(langs)
-				prompt += "\n\nCRITICAL - ERROR HANDLING:\n- ALWAYS read tool results carefully before proceeding\n- If a command shows \"Command failed\" or \"exit 1\" or any error, you MUST fix the issue\n- NEVER claim success if there was an error - the user can see the output\n- After fixing, re-run the command to verify it works\n\n" + rules
-			}
+			rules := lang.GetErrorRules(langs) // Returns LangUnknown rules if no langs detected
+			prompt += "\n\n" + rules
 		}
 
 		c.history = append(c.history, Message{
