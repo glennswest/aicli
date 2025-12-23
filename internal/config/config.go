@@ -51,7 +51,7 @@ func (c *Config) SetToolPermission(tool, permission string) {
 
 func DefaultConfig() *Config {
 	return &Config{
-		APIEndpoint: "http://localhost:8000/v1",
+		APIEndpoint: "http://localhost:11434/v1",
 		APIKey:      "",
 		Model:       "default",
 		MaxTokens:   4096,

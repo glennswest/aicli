@@ -431,7 +431,18 @@ func (c *Client) sendRequest(stream bool, onToken func(string)) (*ChatResult, er
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		c.logDebug("error", bodyBytes)
-		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(bodyBytes))
+
+		// Check if error is due to model not supporting tools
+		errStr := string(bodyBytes)
+		if resp.StatusCode == http.StatusBadRequest &&
+			strings.Contains(errStr, "does not support tools") && c.useTools {
+			// Disable tools and retry
+			c.useTools = false
+			resp.Body.Close()
+			return c.sendRequest(stream, onToken)
+		}
+
+		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, errStr)
 	}
 
 	var result *ChatResult

@@ -831,20 +831,15 @@ DO NOT run other commands. Execute the first TODO item NOW.`, result.ExitCode, s
 
 	case "git_status":
 		result := c.exec.GitStatus()
-		fmt.Println(result.String())
+		// Output already streamed by executor
 		return result.String()
 
 	case "git_diff":
 		var a tools.GitDiffArgs
 		json.Unmarshal([]byte(args), &a)
 		result := c.exec.GitDiff(a.Staged)
-		output := result.String()
-		if len(output) > 500 {
-			fmt.Printf("%s\n... (truncated)\n", output[:500])
-		} else {
-			fmt.Println(output)
-		}
-		return output
+		// Output already streamed by executor
+		return result.String()
 
 	case "git_add":
 		var a tools.GitAddArgs
@@ -888,14 +883,14 @@ DO NOT run other commands. Execute the first TODO item NOW.`, result.ExitCode, s
 			count = 10
 		}
 		result := c.exec.GitLog(count)
-		fmt.Println(result.String())
+		// Output already streamed by executor
 		return result.String()
 
 	case "list_files":
 		var a tools.ListFilesArgs
 		json.Unmarshal([]byte(args), &a)
 		result := c.exec.ListFiles(a.Pattern)
-		fmt.Println(result.String())
+		// Output already streamed by executor
 		return result.String()
 
 	case "get_version":
@@ -1191,6 +1186,8 @@ func isUnfixableByRerun(output string) bool {
 		"unknown revision",           // Go: bad version/tag
 		"malformed module path",      // Go: invalid import path
 		"unrecognized import path",   // Go: package doesn't exist at all
+		"already exists",             // File/resource already exists
+		"file exists",                // Alternative "already exists" message
 	}
 	for _, pattern := range unfixablePatterns {
 		if strings.Contains(output, pattern) {
