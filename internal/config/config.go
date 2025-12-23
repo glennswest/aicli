@@ -15,8 +15,38 @@ type Config struct {
 	Temperature  float64 `json:"temperature"`
 	SystemPrompt string  `json:"system_prompt"`
 
+	// Tool permissions: "always", "ask", or "never" per tool
+	// Tools: write_file, run_command, git_commit, git_add, screenshot, set_version
+	ToolPermissions map[string]string `json:"tool_permissions,omitempty"`
+
 	// Internal: tracks which config file was loaded
 	loadedFrom string
+}
+
+// Permission constants
+const (
+	PermissionAlways = "always"
+	PermissionAsk    = "ask"
+	PermissionNever  = "never"
+)
+
+// GetToolPermission returns the permission for a tool, defaulting to "ask"
+func (c *Config) GetToolPermission(tool string) string {
+	if c.ToolPermissions == nil {
+		return PermissionAsk
+	}
+	if perm, ok := c.ToolPermissions[tool]; ok {
+		return perm
+	}
+	return PermissionAsk
+}
+
+// SetToolPermission sets the permission for a tool and saves config
+func (c *Config) SetToolPermission(tool, permission string) {
+	if c.ToolPermissions == nil {
+		c.ToolPermissions = make(map[string]string)
+	}
+	c.ToolPermissions[tool] = permission
 }
 
 func DefaultConfig() *Config {

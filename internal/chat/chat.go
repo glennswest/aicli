@@ -363,6 +363,9 @@ func (c *Chat) handleCommand(cmd string) bool {
 		c.cfg.Model = newModel
 		fmt.Printf("Switched to model: %s\n", newModel)
 
+	case "/permissions", "/perms":
+		c.handlePermissionsCommand(parts[1:])
+
 	default:
 		fmt.Printf("Unknown command: %s\n", parts[0])
 	}
@@ -398,6 +401,76 @@ func (c *Chat) handleGitCommand(args []string) {
 		return
 	}
 	fmt.Println(result.String())
+}
+
+func (c *Chat) handlePermissionsCommand(args []string) {
+	toolNames := []string{"write_file", "run_command", "git_add", "git_commit", "screenshot", "set_version"}
+
+	if len(args) == 0 {
+		// Show current permissions
+		fmt.Println("\nTool Permissions:")
+		fmt.Println("─────────────────────────────────────")
+		for _, tool := range toolNames {
+			perm := c.cfg.GetToolPermission(tool)
+			var permColor string
+			switch perm {
+			case config.PermissionAlways:
+				permColor = "\033[32m" // green
+			case config.PermissionNever:
+				permColor = "\033[31m" // red
+			default:
+				permColor = "\033[33m" // yellow
+			}
+			fmt.Printf("  %-15s %s%s\033[0m\n", tool, permColor, perm)
+		}
+		fmt.Println("─────────────────────────────────────")
+		fmt.Println("Usage: /permissions reset [tool]  - reset to 'ask'")
+		fmt.Println("       /permissions set <tool> <always|ask|never>")
+		return
+	}
+
+	switch args[0] {
+	case "reset":
+		if len(args) > 1 {
+			// Reset specific tool
+			tool := args[1]
+			c.cfg.SetToolPermission(tool, config.PermissionAsk)
+			if err := c.cfg.Save(); err != nil {
+				fmt.Printf("Error saving config: %v\n", err)
+				return
+			}
+			fmt.Printf("Reset %s to 'ask'\n", tool)
+		} else {
+			// Reset all
+			c.cfg.ToolPermissions = nil
+			if err := c.cfg.Save(); err != nil {
+				fmt.Printf("Error saving config: %v\n", err)
+				return
+			}
+			fmt.Println("Reset all permissions to 'ask'")
+		}
+
+	case "set":
+		if len(args) < 3 {
+			fmt.Println("Usage: /permissions set <tool> <always|ask|never>")
+			return
+		}
+		tool := args[1]
+		perm := args[2]
+		if perm != config.PermissionAlways && perm != config.PermissionAsk && perm != config.PermissionNever {
+			fmt.Println("Permission must be: always, ask, or never")
+			return
+		}
+		c.cfg.SetToolPermission(tool, perm)
+		if err := c.cfg.Save(); err != nil {
+			fmt.Printf("Error saving config: %v\n", err)
+			return
+		}
+		fmt.Printf("Set %s to '%s'\n", tool, perm)
+
+	default:
+		fmt.Println("Unknown subcommand. Use: /permissions [reset|set]")
+	}
 }
 
 func (c *Chat) addFileContext(path string) {
@@ -515,8 +588,8 @@ func (c *Chat) executeTool(tc tools.ToolCall) string {
 		json.Unmarshal([]byte(args), &a)
 		fmt.Printf("\033[90m$ %s\033[0m\n", a.Command)
 
-		if !c.autoExec && !c.confirm("Execute this command?") {
-			return "User declined to execute command"
+		if !c.confirmTool("run_command", fmt.Sprintf("Execute command: %s", a.Command)) {
+			return "OPERATION FAILED: User declined to execute command. The command was NOT run."
 		}
 
 		result := c.exec.Run(a.Command)
@@ -589,8 +662,8 @@ func (c *Chat) executeTool(tc tools.ToolCall) string {
 		json.Unmarshal([]byte(args), &a)
 		fmt.Printf("\033[90mCapturing screenshot...\033[0m\n")
 
-		if !c.autoExec && !c.confirm("Capture screenshot?") {
-			return "User declined screenshot"
+		if !c.confirmTool("screenshot", "Capture screenshot?") {
+			return "OPERATION FAILED: User declined screenshot. No screenshot was taken."
 		}
 
 		result := c.exec.ScreenCapture(a.OutputPath, a.Interactive)
@@ -623,8 +696,8 @@ func (c *Chat) executeTool(tc tools.ToolCall) string {
 			fmt.Printf("\033[90mStaging all changes\033[0m\n")
 		}
 
-		if !c.autoExec && !c.confirm("Stage these files?") {
-			return "User declined to stage files"
+		if !c.confirmTool("git_add", "Stage these files?") {
+			return "OPERATION FAILED: User declined to stage files. No files were staged."
 		}
 
 		result := c.exec.GitAdd(a.Files...)
@@ -639,8 +712,8 @@ func (c *Chat) executeTool(tc tools.ToolCall) string {
 		}
 		fmt.Printf("\033[90mMessage: %s (bump: %s)\033[0m\n", a.Message, bump)
 
-		if !c.autoExec && !c.confirm("Create this commit?") {
-			return "User declined to commit"
+		if !c.confirmTool("git_commit", fmt.Sprintf("Create commit: %s", a.Message)) {
+			return "OPERATION FAILED: User declined to commit. No commit was created."
 		}
 
 		result := c.exec.GitCommitWithVersion(a.Message, bump)
@@ -679,8 +752,8 @@ func (c *Chat) executeTool(tc tools.ToolCall) string {
 		json.Unmarshal([]byte(args), &a)
 		fmt.Printf("\033[90mSetting version to: %s\033[0m\n", a.Version)
 
-		if !c.autoExec && !c.confirm("Set this version?") {
-			return "User declined"
+		if !c.confirmTool("set_version", fmt.Sprintf("Set version to %s?", a.Version)) {
+			return "OPERATION FAILED: User declined to set version. Version was NOT changed."
 		}
 
 		v := executor.ParseVersion(a.Version)
@@ -706,8 +779,8 @@ func (c *Chat) handleWriteFile(path, content, fileType string) string {
 		fmt.Printf("\033[90m%s\033[0m\n", content)
 	}
 
-	if !c.autoExec && !c.confirm(fmt.Sprintf("Write this %s?", fileType)) {
-		return fmt.Sprintf("User declined to write %s", fileType)
+	if !c.confirmTool("write_file", fmt.Sprintf("Write %s to %s (%d bytes)?", fileType, path, len(content))) {
+		return fmt.Sprintf("OPERATION FAILED: User declined to write %s. The file was NOT created or modified.", fileType)
 	}
 
 	if err := c.exec.WriteFile(path, content); err != nil {
@@ -718,19 +791,75 @@ func (c *Chat) handleWriteFile(path, content, fileType string) string {
 	return fmt.Sprintf("Successfully wrote %d bytes to %s", len(content), path)
 }
 
-func (c *Chat) confirm(prompt string) bool {
-	// In non-interactive mode, there's no readline - decline unless autoExec is set
-	if c.rl == nil {
-		fmt.Printf("\033[33m%s [y/N]: \033[0m(no input in non-interactive mode, use -auto to auto-execute)\n", prompt)
+// confirmTool asks for permission to execute a tool with options:
+// y = yes (once), n = no, a = always allow this tool
+// Returns true if the tool should be executed
+func (c *Chat) confirmTool(toolName, prompt string) bool {
+	// Check if autoExec is enabled
+	if c.autoExec {
+		return true
+	}
+
+	// Check saved permission for this tool
+	perm := c.cfg.GetToolPermission(toolName)
+	switch perm {
+	case config.PermissionAlways:
+		fmt.Printf("\033[32m✓ Auto-approved: %s (permission: always)\033[0m\n", toolName)
+		return true
+	case config.PermissionNever:
+		fmt.Printf("\033[31m✗ Auto-denied: %s (permission: never)\033[0m\n", toolName)
 		return false
 	}
-	fmt.Printf("\033[33m%s [y/N]: \033[0m", prompt)
+
+	// In non-interactive mode, decline
+	if c.rl == nil {
+		fmt.Printf("\033[33m%s\033[0m\n", prompt)
+		fmt.Println("\033[31m✗ Declined (non-interactive mode, use -auto flag)\033[0m")
+		return false
+	}
+
+	// Show the prompt with options
+	fmt.Println() // Ensure we're on a new line
+	fmt.Printf("\033[33m╭─ %s\033[0m\n", prompt)
+	fmt.Printf("\033[33m│ (y)es once, (n)o, (a)lways allow %s, (!) never allow\033[0m\n", toolName)
+	fmt.Printf("\033[33m╰─▶ \033[0m")
+	os.Stdout.Sync() // Flush output before reading
+
 	line, err := c.rl.Readline()
 	if err != nil {
+		fmt.Println("\033[31m✗ Declined (read error)\033[0m")
 		return false
 	}
+
 	line = strings.ToLower(strings.TrimSpace(line))
-	return line == "y" || line == "yes"
+
+	switch line {
+	case "y", "yes":
+		fmt.Println("\033[32m✓ Approved\033[0m")
+		return true
+	case "a", "always":
+		fmt.Printf("\033[32m✓ Approved (saving 'always' for %s)\033[0m\n", toolName)
+		c.cfg.SetToolPermission(toolName, config.PermissionAlways)
+		if err := c.cfg.Save(); err != nil {
+			fmt.Printf("\033[33mWarning: could not save config: %v\033[0m\n", err)
+		}
+		return true
+	case "!", "never":
+		fmt.Printf("\033[31m✗ Denied (saving 'never' for %s)\033[0m\n", toolName)
+		c.cfg.SetToolPermission(toolName, config.PermissionNever)
+		if err := c.cfg.Save(); err != nil {
+			fmt.Printf("\033[33mWarning: could not save config: %v\033[0m\n", err)
+		}
+		return false
+	default:
+		fmt.Println("\033[31m✗ Declined\033[0m")
+		return false
+	}
+}
+
+// confirm is a simple yes/no confirmation (for backward compatibility)
+func (c *Chat) confirm(prompt string) bool {
+	return c.confirmTool("general", prompt)
 }
 
 func (c *Chat) printHelp() {
@@ -746,6 +875,7 @@ Commands:
   /git <cmd>       Git commands (status, diff, log, add, commit)
   /version         Show current project version
   /auto            Toggle auto-execute mode
+  /permissions     View/manage tool permissions
   /search <query>  Search the web
   /screenshot      Capture a screenshot
   /sessions        List recorded sessions
@@ -753,6 +883,15 @@ Commands:
   /config          Show current configuration
   /models          List available models
   /model [name]    Show or switch current model
+
+Tool Permissions:
+  When a tool wants to execute, you'll be prompted with options:
+    (y)es     - approve once
+    (n)o      - decline once
+    (a)lways  - always approve this tool type
+    (!)       - never allow this tool type
+
+  Use /permissions to view and manage saved permissions.
 
 The AI can:
   - Execute shell commands (builds, tests, etc.)
