@@ -538,11 +538,23 @@ func (c *Chat) sendMessage(msg string) {
 	fmt.Println()
 
 	for len(result.ToolCalls) > 0 {
+		commandFailed := false
 		for _, tc := range result.ToolCalls {
 			c.recorder.RecordToolCall(tc.Function.Name, tc.Function.Arguments)
 			toolResult := c.executeTool(tc)
 			c.recorder.RecordToolResult(tc.Function.Name, toolResult)
 			c.client.AddToolResult(tc.ID, toolResult)
+
+			// Stop executing remaining tool calls if a command failed
+			// This forces the LLM to address the error before continuing
+			if strings.Contains(toolResult, "COMMAND FAILED") {
+				commandFailed = true
+				break
+			}
+		}
+		// Clear remaining tool calls so we don't try to execute them
+		if commandFailed {
+			result.ToolCalls = nil
 		}
 
 		tokenCount = 0
