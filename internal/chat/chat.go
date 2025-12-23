@@ -724,18 +724,19 @@ func (c *Chat) executeTool(tc tools.ToolCall) string {
 			}
 		}
 
+		// Build error message with stderr prominently displayed
+		stderrSection := ""
+		if stderr != "" {
+			stderrSection = fmt.Sprintf("\n\nSTDERR OUTPUT:\n%s\n", stderr)
+		}
+
 		return fmt.Sprintf(`COMMAND FAILED (exit %d)
-
-=== STOP - DO NOT PROCEED ===
-
-The command failed. You MUST fix this before continuing.
 %s
-Error: %s
+=== STOP - YOU MUST FIX THIS ===
+%s
+Error Summary: %s
 
-DO NOT run other commands. Execute the first TODO item NOW.
-
-Full output:
-%s`, result.ExitCode, todoList, errorSummary, output)
+DO NOT run other commands. Execute the first TODO item NOW.`, result.ExitCode, stderrSection, todoList, errorSummary)
 
 	case "write_file":
 		var a tools.WriteFileArgs
