@@ -655,9 +655,7 @@ func (c *Chat) executeTool(tc tools.ToolCall) string {
 		result := c.exec.Run(a.Command)
 		output := result.String()
 		stderr := result.Error // Get stderr specifically
-		if output != "" {
-			fmt.Println(output)
-		}
+		// Output is already streamed during execution, no need to print again
 
 		// Check stderr for errors - even if exit code is 0, stderr may have warnings/errors
 		stderrHasError := stderr != "" && (strings.Contains(stderr, "error") ||
