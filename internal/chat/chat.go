@@ -602,19 +602,22 @@ func (c *Chat) sendMessage(msg string) {
 				break
 			}
 		}
-		// If command failed, inject user message to interrupt and force attention
+		// If command failed, optionally inject user message to interrupt and force attention
+		// Smarter models (qwen2.5:72b) don't need this; they follow the TODO in tool result
 		if commandFailed {
 			result.ToolCalls = nil
 
-			// Build user interrupt message with the first todo
-			interruptMsg := "STOP. The command failed. "
-			if len(c.pendingTodos) > 0 {
-				interruptMsg += fmt.Sprintf("You MUST run this command now: %s", c.pendingTodos[0])
-			} else {
-				interruptMsg += "Read the error above and fix it before continuing."
+			if c.cfg.UserInterrupts {
+				// Build user interrupt message with the first todo
+				interruptMsg := "STOP. The command failed. "
+				if len(c.pendingTodos) > 0 {
+					interruptMsg += fmt.Sprintf("You MUST run this command now: %s", c.pendingTodos[0])
+				} else {
+					interruptMsg += "Read the error above and fix it before continuing."
+				}
+				c.client.AddUserInterrupt(interruptMsg)
+				fmt.Printf("\033[33m[User interrupt: %s]\033[0m\n", interruptMsg)
 			}
-			c.client.AddUserInterrupt(interruptMsg)
-			fmt.Printf("\033[33m[User interrupt: %s]\033[0m\n", interruptMsg)
 			_ = failedToolResult // Used for context
 		}
 
@@ -695,8 +698,8 @@ func (c *Chat) executeTool(tc tools.ToolCall) string {
 				}
 			}
 
-			// If there are remaining todos, inject user interrupt to continue
-			if len(c.pendingTodos) > 0 {
+			// If there are remaining todos, optionally inject user interrupt to continue
+			if len(c.pendingTodos) > 0 && c.cfg.UserInterrupts {
 				nextTodo := c.pendingTodos[0]
 				interruptMsg := fmt.Sprintf("Good. Now run the next command: %s", nextTodo)
 				c.client.AddUserInterrupt(interruptMsg)

@@ -19,6 +19,10 @@ type Config struct {
 	// Tools: write_file, run_command, git_commit, git_add, screenshot, set_version
 	ToolPermissions map[string]string `json:"tool_permissions,omitempty"`
 
+	// UserInterrupts: if true, inject user messages to nudge model on errors
+	// Smarter models (qwen2.5:72b) don't need this; weaker models might
+	UserInterrupts bool `json:"user_interrupts,omitempty"`
+
 	// Internal: tracks which config file was loaded
 	loadedFrom string
 }
