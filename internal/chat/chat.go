@@ -654,10 +654,20 @@ func (c *Chat) executeTool(tc tools.ToolCall) string {
 
 		result := c.exec.Run(a.Command)
 		output := result.String()
+		stderr := result.Error // Get stderr specifically
 		if output != "" {
 			fmt.Println(output)
 		}
-		if result.Success() {
+
+		// Check stderr for errors - even if exit code is 0, stderr may have warnings/errors
+		stderrHasError := stderr != "" && (strings.Contains(stderr, "error") ||
+			strings.Contains(stderr, "Error") ||
+			strings.Contains(stderr, "failed") ||
+			strings.Contains(stderr, "not found") ||
+			strings.Contains(stderr, "cannot find") ||
+			strings.Contains(stderr, "undefined"))
+
+		if result.Success() && !stderrHasError {
 			// Check if this completes a pending todo
 			if len(c.pendingTodos) > 0 {
 				firstTodo := c.pendingTodos[0]
@@ -682,8 +692,15 @@ func (c *Chat) executeTool(tc tools.ToolCall) string {
 		}
 
 		// Command failed - push fix onto todo stack
-		errorSummary := extractErrorSummary(output, a.Command)
-		fixCmd, isConcrete := getFixCommand(output)
+		// Use stderr specifically for fix detection since that's where errors are
+		errorSummary := extractErrorSummary(stderr, a.Command)
+		if errorSummary == "" {
+			errorSummary = extractErrorSummary(output, a.Command)
+		}
+		fixCmd, isConcrete := getFixCommand(stderr)
+		if fixCmd == "" {
+			fixCmd, isConcrete = getFixCommand(output)
+		}
 
 		// Clear old todos and set fresh ones for this error
 		if fixCmd != "" {
