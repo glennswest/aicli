@@ -718,17 +718,25 @@ func (c *Chat) executeTool(tc tools.ToolCall) string {
 		}
 
 		// Clear old todos and set fresh ones for this error
-		if fixCmd != "" {
-			// Clear any existing todos - start fresh with the current fix
-			c.pendingTodos = nil
+		// Clear any existing todos - start fresh with the current fix
+		c.pendingTodos = nil
 
+		// Check if the error indicates the command itself is wrong (not just missing prereqs)
+		unfixable := isUnfixableByRerun(stderr) || isUnfixableByRerun(output)
+
+		if fixCmd != "" {
 			// Build todo list in order (pushTodo prepends, so add in reverse)
-			c.pushTodo(fmt.Sprintf("Then re-run: %s", a.Command))
+			if !unfixable {
+				c.pushTodo(fmt.Sprintf("Then re-run: %s", a.Command))
+			}
 			if isConcrete {
 				c.pushTodo(fmt.Sprintf("Run: %s", fixCmd))
 			} else {
 				c.pushTodo(fmt.Sprintf("Fix: %s", fixCmd))
 			}
+		} else if unfixable {
+			// No fix command but error is unfixable - tell model to check the command
+			c.pushTodo("Check the command - the package/version may not exist. Use 'go list -m -versions <module>@latest' to find valid versions")
 		}
 
 		todoList := ""
@@ -1170,4 +1178,24 @@ func getFixCommand(output string) (string, bool) {
 	}
 
 	return "", false
+}
+
+// isUnfixableByRerun returns true if the error indicates the command itself is wrong
+// and re-running it won't help (e.g., wrong package name, version doesn't exist)
+func isUnfixableByRerun(output string) bool {
+	unfixablePatterns := []string{
+		"no matching versions",       // Go: package version doesn't exist
+		"404 Not Found",              // HTTP: resource doesn't exist
+		"could not read Username",    // Git: auth issue with bad URL
+		"invalid version",            // Go: malformed version
+		"unknown revision",           // Go: bad version/tag
+		"malformed module path",      // Go: invalid import path
+		"unrecognized import path",   // Go: package doesn't exist at all
+	}
+	for _, pattern := range unfixablePatterns {
+		if strings.Contains(output, pattern) {
+			return true
+		}
+	}
+	return false
 }
