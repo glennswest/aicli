@@ -87,9 +87,26 @@ func (c *Chat) RunSingle(prompt string) error {
 	return nil
 }
 
-// pushTodo adds a required action to the front of the todo stack
+// pushTodo adds a required action to the front of the todo stack (no duplicates)
 func (c *Chat) pushTodo(action string) {
+	// Don't add if already in the stack
+	for _, existing := range c.pendingTodos {
+		if existing == action {
+			return
+		}
+	}
 	c.pendingTodos = append([]string{action}, c.pendingTodos...)
+}
+
+// clearTodosMatching removes all todos containing the given substring
+func (c *Chat) clearTodosMatching(substr string) {
+	filtered := c.pendingTodos[:0]
+	for _, todo := range c.pendingTodos {
+		if !strings.Contains(todo, substr) {
+			filtered = append(filtered, todo)
+		}
+	}
+	c.pendingTodos = filtered
 }
 
 // popTodo removes and returns the first todo, or empty string if none
@@ -668,10 +685,13 @@ func (c *Chat) executeTool(tc tools.ToolCall) string {
 		errorSummary := extractErrorSummary(output, a.Command)
 		fixCmd, isConcrete := getFixCommand(output)
 
-		// Push todos: first verify the fix, then run the fix
+		// Clear old todos and set fresh ones for this error
 		if fixCmd != "" {
-			// Push in reverse order so they execute in correct order
-			c.pushTodo(fmt.Sprintf("Re-run: %s", a.Command))
+			// Clear any existing todos - start fresh with the current fix
+			c.pendingTodos = nil
+
+			// Build todo list in order (pushTodo prepends, so add in reverse)
+			c.pushTodo(fmt.Sprintf("Then re-run: %s", a.Command))
 			if isConcrete {
 				c.pushTodo(fmt.Sprintf("Run: %s", fixCmd))
 			} else {
