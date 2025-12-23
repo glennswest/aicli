@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"aicli/internal/config"
+	"aicli/internal/lang"
 	"aicli/internal/tools"
 )
 
@@ -227,6 +228,7 @@ type Client struct {
 	history    []Message
 	useTools   bool
 	debugDir   string
+	workDir    string
 	requestNum int
 }
 
@@ -251,7 +253,7 @@ func New(cfg *config.Config) *Client {
 	}
 }
 
-// NewWithDebug creates a client with debug logging enabled
+// NewWithDebug creates a client with debug logging and language detection enabled
 func NewWithDebug(cfg *config.Config, workDir string) *Client {
 	debugDir := filepath.Join(workDir, ".aicli", "debug")
 	os.MkdirAll(debugDir, 0755)
@@ -266,6 +268,7 @@ func NewWithDebug(cfg *config.Config, workDir string) *Client {
 		history:  make([]Message, 0),
 		useTools: true,
 		debugDir: debugDir,
+		workDir:  workDir,
 	}
 }
 
@@ -338,9 +341,20 @@ func (c *Client) ClearHistory() {
 
 func (c *Client) AddSystemPrompt() {
 	if c.cfg.SystemPrompt != "" && len(c.history) == 0 {
+		prompt := c.cfg.SystemPrompt
+
+		// Detect language and append appropriate error handling rules
+		if c.workDir != "" {
+			langs := lang.DetectMultipleLanguages(c.workDir)
+			if len(langs) > 0 {
+				rules := lang.GetErrorRules(langs)
+				prompt += "\n\nCRITICAL - ERROR HANDLING:\n- ALWAYS read tool results carefully before proceeding\n- If a command shows \"Command failed\" or \"exit 1\" or any error, you MUST fix the issue\n- NEVER claim success if there was an error - the user can see the output\n- After fixing, re-run the command to verify it works\n\n" + rules
+			}
+		}
+
 		c.history = append(c.history, Message{
 			Role:    "system",
-			Content: c.cfg.SystemPrompt,
+			Content: prompt,
 		})
 	}
 }

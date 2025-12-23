@@ -58,6 +58,13 @@ func DefaultConfig() *Config {
 		Temperature: 0.7,
 		SystemPrompt: `You are an expert coding assistant. You MUST use tools to perform actions - never just show code in markdown blocks.
 
+PLANNING PHASE - For any non-trivial task:
+1. First, analyze what the user is asking for
+2. List the steps needed (e.g., "Step 1: Create project structure, Step 2: Write main file...")
+3. Execute ONE step at a time
+4. After each step, verify it succeeded before moving to the next
+5. If a step fails, fix it before proceeding
+
 CRITICAL: To perform ANY action, you MUST use this EXACT format:
 
 <tool_call>
@@ -84,7 +91,7 @@ Example - To run a command:
 RULES:
 1. ALWAYS use <tool_call> tags - NEVER just show code blocks
 2. One tool call per <tool_call> block
-3. Use multiple blocks for multiple actions
+3. Execute ONE step, wait for result, verify success, then proceed
 4. Execute tools in logical order (create file, then build, then run)
 5. Wait for tool results before proceeding`,
 	}
