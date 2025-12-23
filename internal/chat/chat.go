@@ -19,14 +19,15 @@ import (
 )
 
 type Chat struct {
-	client   *client.Client
-	cfg      *config.Config
-	rl       *readline.Instance
-	exec     *executor.Executor
-	web      *web.WebSearch
-	recorder *session.Recorder
-	autoExec bool
-	playback *session.Playback
+	client       *client.Client
+	cfg          *config.Config
+	rl           *readline.Instance
+	exec         *executor.Executor
+	web          *web.WebSearch
+	recorder     *session.Recorder
+	autoExec     bool
+	playback     *session.Playback
+	pendingTodos []string // Stack of required actions the AI must complete
 }
 
 func New(cfg *config.Config) (*Chat, error) {
@@ -84,6 +85,36 @@ func (c *Chat) RunSingle(prompt string) error {
 	c.recorder.RecordUser(prompt)
 	c.sendMessage(prompt)
 	return nil
+}
+
+// pushTodo adds a required action to the front of the todo stack
+func (c *Chat) pushTodo(action string) {
+	c.pendingTodos = append([]string{action}, c.pendingTodos...)
+}
+
+// popTodo removes and returns the first todo, or empty string if none
+func (c *Chat) popTodo() string {
+	if len(c.pendingTodos) == 0 {
+		return ""
+	}
+	todo := c.pendingTodos[0]
+	c.pendingTodos = c.pendingTodos[1:]
+	return todo
+}
+
+// getTodoPrompt returns a prompt prefix if there are pending todos
+func (c *Chat) getTodoPrompt() string {
+	if len(c.pendingTodos) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(`
+=== BLOCKING TODO - YOU MUST DO THIS FIRST ===
+%s
+
+Execute this command NOW before doing anything else.
+=====================================
+
+`, c.pendingTodos[0])
 }
 
 func NewPlaybackMode(cfg *config.Config, sessionPath string) (*Chat, error) {
@@ -610,25 +641,64 @@ func (c *Chat) executeTool(tc tools.ToolCall) string {
 			fmt.Println(output)
 		}
 		if result.Success() {
-			return fmt.Sprintf("Command succeeded:\n%s", output)
+			// Check if this completes a pending todo
+			if len(c.pendingTodos) > 0 {
+				firstTodo := c.pendingTodos[0]
+				// If the command matches the expected todo, pop it
+				if strings.Contains(firstTodo, a.Command) ||
+					strings.HasPrefix(firstTodo, "Run:") ||
+					strings.HasPrefix(firstTodo, "Re-run:") {
+					c.popTodo()
+				}
+			}
+
+			// Show remaining todos if any
+			remaining := ""
+			if len(c.pendingTodos) > 0 {
+				remaining = "\n\nREMAINING TODOs:\n"
+				for i, todo := range c.pendingTodos {
+					remaining += fmt.Sprintf("%d. %s\n", i+1, todo)
+				}
+				remaining += "\nExecute the next TODO item."
+			}
+			return fmt.Sprintf("Command succeeded:\n%s%s", output, remaining)
 		}
 
-		// Command failed - inject a forced TODO to make the model address it
+		// Command failed - push fix onto todo stack
 		errorSummary := extractErrorSummary(output, a.Command)
+		fixCmd, isConcrete := getFixCommand(output)
+
+		// Push todos: first verify the fix, then run the fix
+		if fixCmd != "" {
+			// Push in reverse order so they execute in correct order
+			c.pushTodo(fmt.Sprintf("Re-run: %s", a.Command))
+			if isConcrete {
+				c.pushTodo(fmt.Sprintf("Run: %s", fixCmd))
+			} else {
+				c.pushTodo(fmt.Sprintf("Fix: %s", fixCmd))
+			}
+		}
+
+		todoList := ""
+		if len(c.pendingTodos) > 0 {
+			todoList = "\n\nREQUIRED TODO STACK (do these in order):\n"
+			for i, todo := range c.pendingTodos {
+				todoList += fmt.Sprintf("%d. %s\n", i+1, todo)
+			}
+		}
+
 		return fmt.Sprintf(`COMMAND FAILED (exit %d)
 
 === STOP - DO NOT PROCEED ===
 
 The command failed. You MUST fix this before continuing.
+%s
+Error: %s
 
-REQUIRED TODO:
-1. [BLOCKING] Fix error: %s
-2. Re-run the command to verify the fix works
-
-DO NOT run subsequent commands or claim success until this is resolved.
+DO NOT run other commands. Execute the first TODO item NOW.
 
 Full output:
-%s`, result.ExitCode, errorSummary, output)
+%s`, result.ExitCode, todoList, errorSummary, output)
 
 	case "write_file":
 		var a tools.WriteFileArgs
@@ -1020,4 +1090,31 @@ func extractErrorSummary(output, command string) string {
 	}
 
 	return "Command exited with non-zero status"
+}
+
+// getFixCommand returns a specific command to run to fix the error
+// Returns the command and a boolean indicating if it's a concrete command (vs template)
+func getFixCommand(output string) (string, bool) {
+	// Go-specific fixes
+	if strings.Contains(output, "go.mod file not found") {
+		return "go mod init myproject", true
+	}
+	if strings.Contains(output, "missing go.sum entry") {
+		return "go mod tidy", true
+	}
+	if strings.Contains(output, "no required module provides") {
+		return "go mod tidy", true
+	}
+
+	// Python fixes - these need the module name filled in
+	if strings.Contains(output, "ModuleNotFoundError") || strings.Contains(output, "No module named") {
+		return "pip install <missing-module>", false
+	}
+
+	// Node fixes
+	if strings.Contains(output, "Cannot find module") {
+		return "npm install", true
+	}
+
+	return "", false
 }
