@@ -376,6 +376,14 @@ func (c *Client) AddToolResult(toolCallID, result string) {
 	})
 }
 
+// AddUserInterrupt injects a user message to interrupt the assistant's flow
+func (c *Client) AddUserInterrupt(message string) {
+	c.history = append(c.history, Message{
+		Role:    "user",
+		Content: message,
+	})
+}
+
 func (c *Client) ContinueWithToolResults(stream bool, onToken func(string)) (*ChatResult, error) {
 	return c.sendRequest(stream, onToken)
 }

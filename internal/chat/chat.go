@@ -587,6 +587,7 @@ func (c *Chat) sendMessage(msg string) {
 
 	for len(result.ToolCalls) > 0 {
 		commandFailed := false
+		var failedToolResult string
 		for _, tc := range result.ToolCalls {
 			c.recorder.RecordToolCall(tc.Function.Name, tc.Function.Arguments)
 			toolResult := c.executeTool(tc)
@@ -597,12 +598,24 @@ func (c *Chat) sendMessage(msg string) {
 			// This forces the LLM to address the error before continuing
 			if strings.Contains(toolResult, "COMMAND FAILED") {
 				commandFailed = true
+				failedToolResult = toolResult
 				break
 			}
 		}
-		// Clear remaining tool calls so we don't try to execute them
+		// If command failed, inject user message to interrupt and force attention
 		if commandFailed {
 			result.ToolCalls = nil
+
+			// Build user interrupt message with the first todo
+			interruptMsg := "STOP. The command failed. "
+			if len(c.pendingTodos) > 0 {
+				interruptMsg += fmt.Sprintf("You MUST run this command now: %s", c.pendingTodos[0])
+			} else {
+				interruptMsg += "Read the error above and fix it before continuing."
+			}
+			c.client.AddUserInterrupt(interruptMsg)
+			fmt.Printf("\033[33m[User interrupt: %s]\033[0m\n", interruptMsg)
+			_ = failedToolResult // Used for context
 		}
 
 		tokenCount = 0
