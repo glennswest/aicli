@@ -79,9 +79,10 @@ var knownToolNames = []string{
 }
 
 // ParseToolCallsFromText extracts tool calls from text output
-// Supports two formats:
+// Supports three formats:
 // 1. <tool_call>{"name": "...", "arguments": {...}}</tool_call>
 // 2. tool_name\n{"arg": "value"} (raw format from some models)
+// 3. {"name": "tool_name", "arguments": {...}} (bare JSON from qwen models)
 func ParseToolCallsFromText(text string) ([]tools.ToolCall, string) {
 	var toolCalls []tools.ToolCall
 	cleanedText := text
@@ -171,13 +172,46 @@ func ParseToolCallsFromText(text string) ([]tools.ToolCall, string) {
 		}
 	}
 
+	// Finally try bare JSON format: {"name": "tool_name", "arguments": {...}}
+	// This is what qwen models output when they "support" tools but don't use tool_calls field
+	if len(toolCalls) == 0 {
+		// Look for JSON objects that look like tool calls
+		trimmed := strings.TrimSpace(cleanedText)
+		if strings.HasPrefix(trimmed, "{") {
+			jsonStr, jsonEnd := extractJSON(trimmed, 0)
+			if jsonStr != "" {
+				var tc TextToolCall
+				if err := json.Unmarshal([]byte(jsonStr), &tc); err == nil && tc.Name != "" {
+					// Verify it's a known tool
+					isKnownTool := false
+					for _, name := range knownToolNames {
+						if tc.Name == name {
+							isKnownTool = true
+							break
+						}
+					}
+					if isKnownTool {
+						toolCall := tools.ToolCall{
+							ID:   fmt.Sprintf("text_call_%d", callIndex),
+							Type: "function",
+						}
+						toolCall.Function.Name = tc.Name
+						toolCall.Function.Arguments = string(tc.Arguments)
+						toolCalls = append(toolCalls, toolCall)
+						cleanedText = strings.TrimSpace(trimmed[jsonEnd:])
+					}
+				}
+			}
+		}
+	}
+
 	cleanedText = strings.TrimSpace(cleanedText)
 	return toolCalls, cleanedText
 }
 
 type Message struct {
 	Role       string           `json:"role"`
-	Content    string           `json:"content,omitempty"`
+	Content    string           `json:"content"` // No omitempty - required for tool role messages
 	ToolCalls  []tools.ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string           `json:"tool_call_id,omitempty"`
 }
