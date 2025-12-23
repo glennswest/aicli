@@ -679,27 +679,31 @@ func (c *Chat) executeTool(tc tools.ToolCall) string {
 			strings.Contains(stderr, "undefined"))
 
 		if result.Success() && !stderrHasError {
-			// Check if this completes a pending todo
+			// Check if this completes a pending todo - only pop if command is in the todo
 			if len(c.pendingTodos) > 0 {
 				firstTodo := c.pendingTodos[0]
-				// If the command matches the expected todo, pop it
-				if strings.Contains(firstTodo, a.Command) ||
-					strings.HasPrefix(firstTodo, "Run:") ||
-					strings.HasPrefix(firstTodo, "Re-run:") {
+				// Extract the command from the todo (after "Run: " or "Then re-run: ")
+				todoCmd := firstTodo
+				if strings.HasPrefix(todoCmd, "Run: ") {
+					todoCmd = strings.TrimPrefix(todoCmd, "Run: ")
+				} else if strings.HasPrefix(todoCmd, "Then re-run: ") {
+					todoCmd = strings.TrimPrefix(todoCmd, "Then re-run: ")
+				}
+				// Only pop if the actual command matches
+				if strings.Contains(a.Command, todoCmd) || strings.Contains(todoCmd, a.Command) {
 					c.popTodo()
 				}
 			}
 
-			// Show remaining todos if any
-			remaining := ""
+			// If there are remaining todos, inject user interrupt to continue
 			if len(c.pendingTodos) > 0 {
-				remaining = "\n\nREMAINING TODOs:\n"
-				for i, todo := range c.pendingTodos {
-					remaining += fmt.Sprintf("%d. %s\n", i+1, todo)
-				}
-				remaining += "\nExecute the next TODO item."
+				nextTodo := c.pendingTodos[0]
+				interruptMsg := fmt.Sprintf("Good. Now run the next command: %s", nextTodo)
+				c.client.AddUserInterrupt(interruptMsg)
+				fmt.Printf("\033[33m[User: %s]\033[0m\n", interruptMsg)
+				return fmt.Sprintf("Command succeeded:\n%s", output)
 			}
-			return fmt.Sprintf("Command succeeded:\n%s%s", output, remaining)
+			return fmt.Sprintf("Command succeeded:\n%s", output)
 		}
 
 		// Command failed - push fix onto todo stack
