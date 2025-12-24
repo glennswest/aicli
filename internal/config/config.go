@@ -231,9 +231,9 @@ func (c *Config) LoadedFrom() string {
 	return c.loadedFrom
 }
 
-// AutoConfigModel selects a model, preferring running models over available ones.
-// If the current model is "default" or not in any list, it picks the first running
-// model, or falls back to the first available model. Returns true if changed.
+// AutoConfigModel selects a model only if current model is "default" or doesn't exist.
+// If the configured model exists in available models, it is never changed.
+// Returns true if the model was changed.
 func (c *Config) AutoConfigModel(runningModels, availableModels []string) bool {
 	if len(runningModels) == 0 && len(availableModels) == 0 {
 		return false
@@ -249,23 +249,26 @@ func (c *Config) AutoConfigModel(runningModels, availableModels []string) bool {
 		return false
 	}
 
-	// Check if current model needs auto-configuration
-	needsConfig := c.Model == "default"
-	if !needsConfig {
-		// Check if current model exists in running or available models
-		needsConfig = !modelInList(c.Model, runningModels) && !modelInList(c.Model, availableModels)
-	}
-
-	if needsConfig {
-		// Prefer running models, fall back to available models
-		if len(runningModels) > 0 {
-			c.Model = runningModels[0]
-		} else if len(availableModels) > 0 {
-			c.Model = availableModels[0]
-		} else {
+	// If model is explicitly configured (not "default"), only change if it doesn't exist
+	if c.Model != "default" {
+		// If the configured model exists in available models, keep it
+		if modelInList(c.Model, availableModels) {
 			return false
 		}
-		return true
+		// If it exists in running models, keep it
+		if modelInList(c.Model, runningModels) {
+			return false
+		}
+		// Model doesn't exist anywhere - fall through to auto-config
 	}
-	return false
+
+	// Need to auto-configure: prefer running models, fall back to available
+	if len(runningModels) > 0 {
+		c.Model = runningModels[0]
+	} else if len(availableModels) > 0 {
+		c.Model = availableModels[0]
+	} else {
+		return false
+	}
+	return true
 }
