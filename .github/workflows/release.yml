@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: darwin
+            goarch: arm64
+            suffix: darwin-arm64
+            ext: zip
+          - goos: linux
+            goarch: amd64
+            suffix: linux-amd64
+            ext: tar.gz
+          - goos: linux
+            goarch: arm64
+            suffix: linux-arm64
+            ext: tar.gz
+          - goos: windows
+            goarch: amd64
+            suffix: windows-amd64
+            ext: zip
+            binary_ext: .exe
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p dist
+          go build -ldflags "-s -w -X main.version=${{ steps.version.outputs.VERSION }}" \
+            -o dist/aicli${{ matrix.binary_ext }} .
+
+      - name: Package (zip)
+        if: matrix.ext == 'zip'
+        run: |
+          cd dist
+          zip aicli-${{ matrix.suffix }}.zip aicli${{ matrix.binary_ext }}
+
+      - name: Package (tar.gz)
+        if: matrix.ext == 'tar.gz'
+        run: |
+          cd dist
+          tar czf aicli-${{ matrix.suffix }}.tar.gz aicli
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aicli-${{ matrix.suffix }}
+          path: dist/aicli-${{ matrix.suffix }}.${{ matrix.ext }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la dist/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
