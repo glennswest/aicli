@@ -266,13 +266,18 @@ func runInteractive(cfg *config.Config) {
 
 func autoConfigModel(cfg *config.Config) {
 	c := client.New(cfg)
-	models, err := c.ListModels()
+
+	// First, try to get running models (preferred)
+	runningModels, _ := c.ListRunningModels()
+
+	// Then get all available models as fallback
+	availableModels, err := c.ListModels()
 	if err != nil {
 		// Silently skip autoconfig if API is unavailable
 		return
 	}
 
-	if cfg.AutoConfigModel(models) {
+	if cfg.AutoConfigModel(runningModels, availableModels) {
 		fmt.Printf("Auto-configured model: %s\n", cfg.Model)
 		// Save to local project config
 		if err := cfg.Save(); err != nil {

@@ -365,6 +365,56 @@ func (c *Client) ListModels() ([]string, error) {
 	return models, nil
 }
 
+// RunningModelsResponse represents the response from /api/ps
+type RunningModelsResponse struct {
+	Models []RunningModelInfo `json:"models"`
+}
+
+// RunningModelInfo represents info about a running model
+type RunningModelInfo struct {
+	Name string `json:"name"`
+}
+
+// ListRunningModels returns the list of currently running/loaded models
+func (c *Client) ListRunningModels() ([]string, error) {
+	// Convert OpenAI-compatible endpoint to Ollama native endpoint
+	// e.g., http://localhost:11434/v1 -> http://localhost:11434/api/ps
+	baseEndpoint := strings.TrimSuffix(c.cfg.APIEndpoint, "/")
+	baseEndpoint = strings.TrimSuffix(baseEndpoint, "/v1")
+	endpoint := baseEndpoint + "/api/ps"
+
+	httpReq, err := http.NewRequest("GET", endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	if c.cfg.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+	}
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch running models: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var runningResp RunningModelsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&runningResp); err != nil {
+		return nil, fmt.Errorf("failed to decode running models response: %w", err)
+	}
+
+	models := make([]string, len(runningResp.Models))
+	for i, m := range runningResp.Models {
+		models[i] = m.Name
+	}
+	return models, nil
+}
+
 func (c *Client) SetUseTools(use bool) {
 	c.useTools = use
 }

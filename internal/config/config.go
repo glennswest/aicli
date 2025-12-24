@@ -231,29 +231,40 @@ func (c *Config) LoadedFrom() string {
 	return c.loadedFrom
 }
 
-// AutoConfigModel selects the first available model if the current model
-// is "default" or not in the available models list. Returns true if changed.
-func (c *Config) AutoConfigModel(availableModels []string) bool {
-	if len(availableModels) == 0 {
+// AutoConfigModel selects a model, preferring running models over available ones.
+// If the current model is "default" or not in any list, it picks the first running
+// model, or falls back to the first available model. Returns true if changed.
+func (c *Config) AutoConfigModel(runningModels, availableModels []string) bool {
+	if len(runningModels) == 0 && len(availableModels) == 0 {
+		return false
+	}
+
+	// Helper to check if model exists in a list
+	modelInList := func(model string, list []string) bool {
+		for _, m := range list {
+			if m == model {
+				return true
+			}
+		}
 		return false
 	}
 
 	// Check if current model needs auto-configuration
 	needsConfig := c.Model == "default"
 	if !needsConfig {
-		// Check if current model exists in available models
-		found := false
-		for _, m := range availableModels {
-			if m == c.Model {
-				found = true
-				break
-			}
-		}
-		needsConfig = !found
+		// Check if current model exists in running or available models
+		needsConfig = !modelInList(c.Model, runningModels) && !modelInList(c.Model, availableModels)
 	}
 
 	if needsConfig {
-		c.Model = availableModels[0]
+		// Prefer running models, fall back to available models
+		if len(runningModels) > 0 {
+			c.Model = runningModels[0]
+		} else if len(availableModels) > 0 {
+			c.Model = availableModels[0]
+		} else {
+			return false
+		}
 		return true
 	}
 	return false
