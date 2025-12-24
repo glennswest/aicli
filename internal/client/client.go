@@ -415,6 +415,63 @@ func (c *Client) ListRunningModels() ([]string, error) {
 	return models, nil
 }
 
+// IsModelRunning checks if a specific model is currently loaded
+func (c *Client) IsModelRunning(modelName string) bool {
+	running, err := c.ListRunningModels()
+	if err != nil {
+		return false
+	}
+	for _, m := range running {
+		if m == modelName {
+			return true
+		}
+	}
+	return false
+}
+
+// LoadModel triggers a model to load and waits for it to be ready
+// Returns an error if loading fails or times out
+func (c *Client) LoadModel(modelName string, keepAlive string) error {
+	// Use Ollama's generate endpoint with empty prompt to trigger load
+	baseEndpoint := strings.TrimSuffix(c.cfg.APIEndpoint, "/")
+	baseEndpoint = strings.TrimSuffix(baseEndpoint, "/v1")
+	endpoint := baseEndpoint + "/api/generate"
+
+	payload := map[string]interface{}{
+		"model":      modelName,
+		"prompt":     "",
+		"keep_alive": keepAlive,
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	httpReq, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	if c.cfg.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+	}
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("failed to load model: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API error %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	return nil
+}
+
 func (c *Client) SetUseTools(use bool) {
 	c.useTools = use
 }

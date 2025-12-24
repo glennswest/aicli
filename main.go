@@ -175,6 +175,7 @@ func main() {
 
 	// Single prompt mode
 	if prompt != "" {
+		ensureModelLoaded(cfg)
 		runSinglePrompt(cfg, prompt)
 		return
 	}
@@ -182,11 +183,13 @@ func main() {
 	// Check for piped input
 	stat, _ := os.Stdin.Stat()
 	if (stat.Mode() & os.ModeCharDevice) == 0 {
+		ensureModelLoaded(cfg)
 		runPipedInput(cfg)
 		return
 	}
 
 	// Interactive chat mode
+	ensureModelLoaded(cfg)
 	runInteractive(cfg)
 }
 
@@ -284,4 +287,27 @@ func autoConfigModel(cfg *config.Config) {
 			fmt.Fprintf(os.Stderr, "Warning: failed to save config: %v\n", err)
 		}
 	}
+}
+
+// ensureModelLoaded checks if the model is running and loads it if not
+func ensureModelLoaded(cfg *config.Config) {
+	c := client.New(cfg)
+
+	// Check if model is already running
+	if c.IsModelRunning(cfg.Model) {
+		fmt.Printf("\033[32m✓ Model %s is ready\033[0m\n", cfg.Model)
+		return
+	}
+
+	// Model not running - need to load it
+	fmt.Printf("\033[33m⏳ Loading model %s (this may take a moment)...\033[0m", cfg.Model)
+
+	// Load the model with 24h keep-alive
+	err := c.LoadModel(cfg.Model, "24h")
+	if err != nil {
+		fmt.Printf("\n\033[31m✗ Failed to load model: %v\033[0m\n", err)
+		return
+	}
+
+	fmt.Printf("\r\033[K\033[32m✓ Model %s is ready\033[0m\n", cfg.Model)
 }
