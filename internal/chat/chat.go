@@ -173,38 +173,80 @@ func (c *Chat) Run() error {
 	}
 
 	v, _ := c.exec.GetVersion()
-	fmt.Printf("AI Coding Assistant (v%s)\n", v.String())
+	fmt.Printf("AI Coding Assistant - aicli v%s (project v%s)\n", config.AppVersion, v.String())
 	fmt.Println("Commands: /help, /clear, /file, /auto, /models, /model, /quit")
 	fmt.Printf("Working directory: %s\n", c.exec.WorkDir())
 	fmt.Printf("Session: %s\n\n", c.recorder.SessionPath())
 
-	// Check for pending todos from previous session
-	pending := c.todoFile.GetPending()
-	if len(pending) > 0 {
-		fmt.Printf("\033[33m>>> Found %d pending todo(s) from previous session:\033[0m\n", len(pending))
-		for i, todo := range pending {
-			status := "[ ]"
-			if todo.Status == "in_progress" {
-				status = "[>]"
+	// Check for incomplete session from previous run
+	resumed := false
+	latestPath, _ := session.GetLatestSession(c.exec.WorkDir())
+	if latestPath != "" && latestPath != c.recorder.SessionPath() {
+		prevSession, err := session.LoadSession(latestPath)
+		if err == nil && session.IsSessionIncomplete(prevSession) {
+			fmt.Printf("\033[33m>>> Previous session appears incomplete\033[0m\n")
+			fmt.Printf("    Last session: %s\n", filepath.Base(latestPath))
+			fmt.Print("\n\033[33mShould I continue where we stopped? (y/n): \033[0m")
+			line, err := c.rl.Readline()
+			if err == nil && strings.ToLower(strings.TrimSpace(line)) == "y" {
+				// Restore conversation history
+				entries := prevSession.GetEntries()
+				restoreEntries := make([]struct {
+					Type     string
+					Content  string
+					ToolName string
+					ToolArgs string
+				}, len(entries))
+				for i, e := range entries {
+					restoreEntries[i] = struct {
+						Type     string
+						Content  string
+						ToolName string
+						ToolArgs string
+					}{e.Type, e.Content, e.ToolName, e.ToolArgs}
+				}
+				c.client.RestoreHistory(restoreEntries)
+
+				fmt.Printf("\033[32m✓ Restored %d conversation entries\033[0m\n", len(entries))
+				c.recorder.RecordUser("[Resumed from previous session]")
+
+				// Send a continue message to pick up where we left off
+				c.sendMessage("Continue where you left off. Execute the tool now - do not show code, just call the tool directly.")
+				resumed = true
 			}
-			fmt.Printf("  %s %d. %s\n", status, i+1, todo.Content)
+			fmt.Println()
 		}
-		fmt.Print("\n\033[33mResume this work? (y/n): \033[0m")
-		line, err := c.rl.Readline()
-		if err == nil && strings.ToLower(strings.TrimSpace(line)) == "y" {
-			// Inject todos as context for the first message
-			todoContext := "I need to continue working on these pending tasks:\n"
+	}
+
+	// Check for pending todos from previous session (if not already resumed)
+	if !resumed {
+		pending := c.todoFile.GetPending()
+		if len(pending) > 0 {
+			fmt.Printf("\033[33m>>> Found %d pending todo(s) from previous session:\033[0m\n", len(pending))
 			for i, todo := range pending {
-				todoContext += fmt.Sprintf("%d. %s\n", i+1, todo.Content)
+				status := "[ ]"
+				if todo.Status == "in_progress" {
+					status = "[>]"
+				}
+				fmt.Printf("  %s %d. %s\n", status, i+1, todo.Content)
 			}
-			todoContext += "\nPlease help me complete these tasks."
-			c.recorder.RecordUser("[Resuming from previous session]")
-			c.history.AddRequest("[Resume] Continuing pending tasks")
-			c.sendMessage(todoContext)
-		} else {
-			fmt.Println("Starting fresh session. Use /todos to view pending items.")
+			fmt.Print("\n\033[33mResume this work? (y/n): \033[0m")
+			line, err := c.rl.Readline()
+			if err == nil && strings.ToLower(strings.TrimSpace(line)) == "y" {
+				// Inject todos as context for the first message
+				todoContext := "I need to continue working on these pending tasks:\n"
+				for i, todo := range pending {
+					todoContext += fmt.Sprintf("%d. %s\n", i+1, todo.Content)
+				}
+				todoContext += "\nPlease help me complete these tasks."
+				c.recorder.RecordUser("[Resuming from previous session]")
+				c.history.AddRequest("[Resume] Continuing pending tasks")
+				c.sendMessage(todoContext)
+			} else {
+				fmt.Println("Starting fresh session. Use /todos to view pending items.")
+			}
+			fmt.Println()
 		}
-		fmt.Println()
 	}
 
 	for {
@@ -749,6 +791,39 @@ func (c *Chat) sendMessage(msg string) {
 		c.recorder.RecordAssistant(result.Content)
 	}
 	fmt.Println()
+
+	// Auto-continue: if model narrated an action but didn't call a tool, nudge it
+	if len(result.ToolCalls) == 0 && shouldAutoContinue(result.Content) {
+		fmt.Printf("\033[33m[Auto-continue: model described action without executing]\033[0m\n")
+		c.client.AddUserInterrupt("You described what you want to do but didn't execute it. Use the tool NOW - do not show code, just call the tool.")
+
+		tokenCount = 0
+		fmt.Print("\033[90mThinking...\033[0m")
+		os.Stdout.Sync()
+		result, err = c.client.ContinueWithToolResults(true, func(token string) {
+			tokenCount++
+			fmt.Printf("\r\033[K\033[90mThinking... [%d tokens]\033[0m", tokenCount)
+			os.Stdout.Sync()
+		})
+		fmt.Print("\r\033[K")
+		if err != nil {
+			fmt.Printf("\033[31mError: %v\033[0m\n", err)
+			return
+		}
+
+		// Parse text-based tool calls from continuation
+		textToolCalls, cleanedContent = client.ParseToolCallsFromText(result.Content)
+		if len(textToolCalls) > 0 {
+			result.ToolCalls = append(result.ToolCalls, textToolCalls...)
+			result.Content = cleanedContent
+		}
+
+		if result.Content != "" {
+			fmt.Print(result.Content)
+			c.recorder.RecordAssistant(result.Content)
+		}
+		fmt.Println()
+	}
 
 	for len(result.ToolCalls) > 0 {
 		commandFailed := false
@@ -1367,6 +1442,35 @@ func getFixCommand(output string) (string, bool) {
 	}
 
 	return "", false
+}
+
+// shouldAutoContinue returns true if the model's response suggests it intended
+// to perform an action but didn't actually call a tool
+func shouldAutoContinue(content string) bool {
+	lower := strings.ToLower(content)
+
+	// Check for intent phrases without execution
+	intentPhrases := []string{
+		"let's create", "let's write", "let's add", "let's update", "let's modify",
+		"let me create", "let me write", "let me add", "let me update", "let me modify",
+		"i'll create", "i'll write", "i'll add", "i'll update", "i'll modify",
+		"i will create", "i will write", "i will add", "i will update", "i will modify",
+		"here's the code", "here is the code", "here's the content", "here is the content",
+		"with this content", "with the following",
+	}
+
+	for _, phrase := range intentPhrases {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+
+	// Check for markdown code blocks (model showed code instead of writing it)
+	if strings.Contains(content, "```") {
+		return true
+	}
+
+	return false
 }
 
 // isUnfixableByRerun returns true if the error indicates the command itself is wrong

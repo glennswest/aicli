@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 )
 
+// AppVersion holds the aicli version, set by main at startup
+var AppVersion = "dev"
+
 type Config struct {
 	APIEndpoint  string  `json:"api_endpoint"`
 	APIKey       string  `json:"api_key"`
@@ -59,7 +62,7 @@ func DefaultConfig() *Config {
 		APIKey:      "",
 		Model:       "default",
 		MaxTokens:   4096,
-		Temperature: 0.7,
+		Temperature: 0.3,
 		SystemPrompt: `You are an expert coding assistant. You MUST use tools to perform actions - never just show code in markdown blocks.
 
 PLANNING PHASE - For any non-trivial task:

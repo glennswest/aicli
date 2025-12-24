@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -175,4 +176,68 @@ func (p *Playback) GetUserInputs() []string {
 		}
 	}
 	return inputs
+}
+
+// GetLatestSession returns the most recent session file for a project
+func GetLatestSession(projectDir string) (string, error) {
+	sessions, err := ListSessions(projectDir)
+	if err != nil || len(sessions) == 0 {
+		return "", err
+	}
+	// Sessions are named with timestamps, so the last one alphabetically is newest
+	latest := sessions[0]
+	for _, s := range sessions[1:] {
+		if s > latest {
+			latest = s
+		}
+	}
+	return latest, nil
+}
+
+// IsSessionIncomplete checks if the last session ended with the model
+// narrating an action but not executing it (suggesting interrupted work)
+func IsSessionIncomplete(session *Session) bool {
+	if len(session.Entries) == 0 {
+		return false
+	}
+
+	// Find the last assistant message
+	var lastAssistant *Entry
+	for i := len(session.Entries) - 1; i >= 0; i-- {
+		if session.Entries[i].Type == "assistant" {
+			lastAssistant = &session.Entries[i]
+			break
+		}
+	}
+
+	if lastAssistant == nil {
+		return false
+	}
+
+	// Check if it contains intent phrases suggesting incomplete work
+	content := strings.ToLower(lastAssistant.Content)
+	intentPhrases := []string{
+		"let's create", "let's write", "let's add", "let's update",
+		"let me create", "let me write", "let me add", "let me update",
+		"here's the code", "here is the code", "with this content",
+		"i'll create", "i'll write", "i will create", "i will write",
+	}
+
+	for _, phrase := range intentPhrases {
+		if strings.Contains(content, phrase) {
+			return true
+		}
+	}
+
+	// Check for markdown code blocks (model showed code instead of writing)
+	if strings.Contains(lastAssistant.Content, "```") {
+		return true
+	}
+
+	return false
+}
+
+// GetEntries returns all entries in the session
+func (s *Session) GetEntries() []Entry {
+	return s.Entries
 }

@@ -14,6 +14,9 @@ import (
 	"aicli/internal/session"
 )
 
+// Version is set at build time via ldflags
+var version = "dev"
+
 var (
 	endpoint     string
 	apiKey       string
@@ -55,6 +58,9 @@ func main() {
 	flag.Parse()
 	fileArgs = flag.Args()
 
+	// Set the app version for other packages to use
+	config.AppVersion = version
+
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
@@ -86,6 +92,7 @@ func main() {
 
 	// Handle --version
 	if showVersion {
+		fmt.Printf("aicli version: %s\n", version)
 		v, _ := exec.GetVersion()
 		fmt.Printf("Project version: %s\n", v.String())
 		return

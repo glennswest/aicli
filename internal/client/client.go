@@ -205,6 +205,23 @@ func ParseToolCallsFromText(text string) ([]tools.ToolCall, string) {
 		}
 	}
 
+	// Detect search narration pattern: Search query: "..." or Searching for: "..."
+	if len(toolCalls) == 0 {
+		searchPattern := regexp.MustCompile(`(?i)(?:search(?:ing)?\s*(?:for|query)?[:\s]*["']([^"']+)["'])`)
+		if matches := searchPattern.FindStringSubmatch(cleanedText); len(matches) > 1 {
+			query := matches[1]
+			argsJSON, _ := json.Marshal(map[string]interface{}{"query": query})
+			toolCall := tools.ToolCall{
+				ID:   fmt.Sprintf("text_call_%d", callIndex),
+				Type: "function",
+			}
+			toolCall.Function.Name = "web_search"
+			toolCall.Function.Arguments = string(argsJSON)
+			toolCalls = append(toolCalls, toolCall)
+			cleanedText = searchPattern.ReplaceAllString(cleanedText, "")
+		}
+	}
+
 	cleanedText = strings.TrimSpace(cleanedText)
 	return toolCalls, cleanedText
 }
@@ -478,6 +495,52 @@ func (c *Client) SetUseTools(use bool) {
 
 func (c *Client) ClearHistory() {
 	c.history = make([]Message, 0)
+}
+
+// RestoreHistory rebuilds conversation history from session entries
+// This allows resuming a previous conversation with full context
+func (c *Client) RestoreHistory(entries []struct {
+	Type     string
+	Content  string
+	ToolName string
+	ToolArgs string
+}) {
+	c.AddSystemPrompt()
+
+	for _, e := range entries {
+		switch e.Type {
+		case "user":
+			c.history = append(c.history, Message{
+				Role:    "user",
+				Content: e.Content,
+			})
+		case "assistant":
+			c.history = append(c.history, Message{
+				Role:    "assistant",
+				Content: e.Content,
+			})
+		case "tool_call":
+			// Tool calls are part of assistant messages, but we track them separately
+			// For now, we skip these as the assistant content captures the intent
+		case "tool_result":
+			// Tool results would need proper tool_call_id matching
+			// For resume purposes, we can add as a system note
+			if e.Content != "" {
+				c.history = append(c.history, Message{
+					Role:    "user",
+					Content: fmt.Sprintf("[Previous tool result from %s]: %s", e.ToolName, truncateForContext(e.Content, 500)),
+				})
+			}
+		}
+	}
+}
+
+// truncateForContext shortens content to avoid context overflow
+func truncateForContext(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "... [truncated]"
 }
 
 func (c *Client) AddSystemPrompt() {
