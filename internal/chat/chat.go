@@ -19,15 +19,17 @@ import (
 )
 
 type Chat struct {
-	client       *client.Client
-	cfg          *config.Config
-	rl           *readline.Instance
-	exec         *executor.Executor
-	web          *web.WebSearch
-	recorder     *session.Recorder
-	autoExec     bool
-	playback     *session.Playback
-	pendingTodos []string // Stack of required actions the AI must complete
+	client    *client.Client
+	cfg       *config.Config
+	rl        *readline.Instance
+	exec      *executor.Executor
+	web       *web.WebSearch
+	recorder  *session.Recorder
+	todoFile  *session.TodoFile
+	changelog *session.ChangelogFile
+	history   *session.HistoryFile
+	autoExec  bool
+	playback  *session.Playback
 }
 
 func New(cfg *config.Config) (*Chat, error) {
@@ -50,13 +52,16 @@ func New(cfg *config.Config) (*Chat, error) {
 	c := client.NewWithDebug(cfg, workDir)
 
 	return &Chat{
-		client:   c,
-		cfg:      cfg,
-		rl:       rl,
-		exec:     exec,
-		web:      web.NewSearch(),
-		recorder: session.NewRecorder(workDir),
-		autoExec: false,
+		client:    c,
+		cfg:       cfg,
+		rl:        rl,
+		exec:      exec,
+		web:       web.NewSearch(),
+		recorder:  session.NewRecorder(workDir),
+		todoFile:  session.NewTodoFile(workDir),
+		changelog: session.NewChangelogFile(workDir),
+		history:   session.NewHistoryFile(workDir),
+		autoExec:  false,
 	}, nil
 }
 
@@ -70,58 +75,51 @@ func NewNonInteractive(cfg *config.Config, autoExec bool) (*Chat, error) {
 	c := client.NewWithDebug(cfg, workDir)
 
 	return &Chat{
-		client:   c,
-		cfg:      cfg,
-		rl:       nil, // No readline for non-interactive mode
-		exec:     exec,
-		web:      web.NewSearch(),
-		recorder: session.NewRecorder(workDir),
-		autoExec: autoExec,
+		client:    c,
+		cfg:       cfg,
+		rl:        nil, // No readline for non-interactive mode
+		exec:      exec,
+		web:       web.NewSearch(),
+		recorder:  session.NewRecorder(workDir),
+		todoFile:  session.NewTodoFile(workDir),
+		changelog: session.NewChangelogFile(workDir),
+		history:   session.NewHistoryFile(workDir),
+		autoExec:  autoExec,
 	}, nil
 }
 
 // RunSingle executes a single prompt with full tool support
 func (c *Chat) RunSingle(prompt string) error {
 	c.recorder.RecordUser(prompt)
+	c.history.AddRequest(prompt)
 	c.sendMessage(prompt)
 	return nil
 }
 
-// pushTodo adds a required action to the front of the todo stack (no duplicates)
+// pushTodo adds a required action to the todo list (persistent)
 func (c *Chat) pushTodo(action string) {
-	// Don't add if already in the stack
-	for _, existing := range c.pendingTodos {
-		if existing == action {
-			return
-		}
-	}
-	c.pendingTodos = append([]string{action}, c.pendingTodos...)
+	c.todoFile.AddTodo(action)
 }
 
 // clearTodosMatching removes all todos containing the given substring
 func (c *Chat) clearTodosMatching(substr string) {
-	filtered := c.pendingTodos[:0]
-	for _, todo := range c.pendingTodos {
-		if !strings.Contains(todo, substr) {
-			filtered = append(filtered, todo)
-		}
-	}
-	c.pendingTodos = filtered
+	c.todoFile.RemoveByContent(substr)
 }
 
-// popTodo removes and returns the first todo, or empty string if none
+// popTodo marks the first todo as completed and returns its content
 func (c *Chat) popTodo() string {
-	if len(c.pendingTodos) == 0 {
-		return ""
-	}
-	todo := c.pendingTodos[0]
-	c.pendingTodos = c.pendingTodos[1:]
-	return todo
+	return c.todoFile.PopFirst()
+}
+
+// clearTodos removes all todos
+func (c *Chat) clearTodos() {
+	c.todoFile.Clear()
 }
 
 // getTodoPrompt returns a prompt prefix if there are pending todos
 func (c *Chat) getTodoPrompt() string {
-	if len(c.pendingTodos) == 0 {
+	pending := c.todoFile.GetPending()
+	if len(pending) == 0 {
 		return ""
 	}
 	return fmt.Sprintf(`
@@ -131,7 +129,7 @@ func (c *Chat) getTodoPrompt() string {
 Execute this command NOW before doing anything else.
 =====================================
 
-`, c.pendingTodos[0])
+`, pending[0].Content)
 }
 
 func NewPlaybackMode(cfg *config.Config, sessionPath string) (*Chat, error) {
@@ -180,6 +178,35 @@ func (c *Chat) Run() error {
 	fmt.Printf("Working directory: %s\n", c.exec.WorkDir())
 	fmt.Printf("Session: %s\n\n", c.recorder.SessionPath())
 
+	// Check for pending todos from previous session
+	pending := c.todoFile.GetPending()
+	if len(pending) > 0 {
+		fmt.Printf("\033[33m>>> Found %d pending todo(s) from previous session:\033[0m\n", len(pending))
+		for i, todo := range pending {
+			status := "[ ]"
+			if todo.Status == "in_progress" {
+				status = "[>]"
+			}
+			fmt.Printf("  %s %d. %s\n", status, i+1, todo.Content)
+		}
+		fmt.Print("\n\033[33mResume this work? (y/n): \033[0m")
+		line, err := c.rl.Readline()
+		if err == nil && strings.ToLower(strings.TrimSpace(line)) == "y" {
+			// Inject todos as context for the first message
+			todoContext := "I need to continue working on these pending tasks:\n"
+			for i, todo := range pending {
+				todoContext += fmt.Sprintf("%d. %s\n", i+1, todo.Content)
+			}
+			todoContext += "\nPlease help me complete these tasks."
+			c.recorder.RecordUser("[Resuming from previous session]")
+			c.history.AddRequest("[Resume] Continuing pending tasks")
+			c.sendMessage(todoContext)
+		} else {
+			fmt.Println("Starting fresh session. Use /todos to view pending items.")
+		}
+		fmt.Println()
+	}
+
 	for {
 		line, err := c.rl.Readline()
 		if err == readline.ErrInterrupt {
@@ -202,6 +229,7 @@ func (c *Chat) Run() error {
 		}
 
 		c.recorder.RecordUser(line)
+		c.history.AddRequest(line)
 		c.sendMessage(line)
 	}
 
@@ -414,6 +442,15 @@ func (c *Chat) handleCommand(cmd string) bool {
 	case "/permissions", "/perms":
 		c.handlePermissionsCommand(parts[1:])
 
+	case "/todos", "/todo":
+		c.handleTodosCommand(parts[1:])
+
+	case "/changelog":
+		c.handleChangelogCommand(parts[1:])
+
+	case "/history":
+		c.handleHistoryCommand(parts[1:])
+
 	default:
 		fmt.Printf("Unknown command: %s\n", parts[0])
 	}
@@ -521,6 +558,134 @@ func (c *Chat) handlePermissionsCommand(args []string) {
 	}
 }
 
+func (c *Chat) handleTodosCommand(args []string) {
+	if len(args) == 0 {
+		// Show all todos
+		todos := c.todoFile.GetAll()
+		if len(todos) == 0 {
+			fmt.Println("No todos.")
+			return
+		}
+
+		fmt.Println("\nTodos:")
+		fmt.Println("─────────────────────────────────────")
+		for i, todo := range todos {
+			status := "[ ]"
+			statusColor := "\033[33m" // yellow
+			if todo.Status == "in_progress" {
+				status = "[>]"
+				statusColor = "\033[36m" // cyan
+			} else if todo.Status == "completed" {
+				status = "[x]"
+				statusColor = "\033[32m" // green
+			}
+			fmt.Printf("  %s%s\033[0m %d. %s\n", statusColor, status, i+1, todo.Content)
+		}
+		fmt.Println("─────────────────────────────────────")
+		fmt.Println("Usage: /todos clear       - clear all todos")
+		fmt.Println("       /todos add <text>  - add a new todo")
+		return
+	}
+
+	switch args[0] {
+	case "clear":
+		c.todoFile.Clear()
+		fmt.Println("Cleared all todos.")
+
+	case "add":
+		if len(args) < 2 {
+			fmt.Println("Usage: /todos add <text>")
+			return
+		}
+		content := strings.Join(args[1:], " ")
+		c.todoFile.AddTodo(content)
+		c.history.AddTodo(content, "added")
+		fmt.Printf("Added todo: %s\n", content)
+
+	default:
+		fmt.Println("Unknown subcommand. Use: /todos [clear|add]")
+	}
+}
+
+func (c *Chat) handleChangelogCommand(args []string) {
+	if len(args) == 0 {
+		// Show recent changelog entries
+		entries := c.changelog.GetRecent(10)
+		if len(entries) == 0 {
+			fmt.Println("No changelog entries.")
+			return
+		}
+
+		fmt.Println("\nRecent Changes:")
+		fmt.Println("─────────────────────────────────────")
+		for _, entry := range entries {
+			timeStr := entry.Timestamp.Format("2006-01-02 15:04")
+			files := ""
+			if len(entry.Files) > 0 {
+				files = fmt.Sprintf(" (%s)", strings.Join(entry.Files, ", "))
+			}
+			fmt.Printf("  [%s] %s: %s%s\n", timeStr, entry.Type, entry.Description, files)
+		}
+		fmt.Println("─────────────────────────────────────")
+		fmt.Printf("Full changelog: %s\n", c.changelog.FilePath())
+		return
+	}
+
+	switch args[0] {
+	case "add":
+		if len(args) < 3 {
+			fmt.Println("Usage: /changelog add <type> <description>")
+			fmt.Println("Types: added, changed, fixed, removed")
+			return
+		}
+		entryType := args[1]
+		description := strings.Join(args[2:], " ")
+		c.changelog.AddEntry(entryType, description, nil)
+		fmt.Printf("Added changelog entry: [%s] %s\n", entryType, description)
+
+	default:
+		fmt.Println("Unknown subcommand. Use: /changelog [add]")
+	}
+}
+
+func (c *Chat) handleHistoryCommand(args []string) {
+	count := 10
+	if len(args) > 0 {
+		if n, err := fmt.Sscanf(args[0], "%d", &count); n == 1 && err == nil {
+			// Use provided count
+		}
+	}
+
+	entries := c.history.GetRecent(count)
+	if len(entries) == 0 {
+		fmt.Println("No history entries.")
+		return
+	}
+
+	fmt.Println("\nProject History:")
+	fmt.Println("─────────────────────────────────────")
+	for _, entry := range entries {
+		timeStr := entry.Timestamp.Format("2006-01-02 15:04")
+		switch entry.Type {
+		case "request":
+			// Truncate long requests
+			desc := entry.Description
+			if len(desc) > 60 {
+				desc = desc[:57] + "..."
+			}
+			fmt.Printf("  [%s] > %s\n", timeStr, desc)
+		case "todo":
+			fmt.Printf("  [%s] TODO %s: %s\n", timeStr, entry.Details, entry.Description)
+		case "change":
+			fmt.Printf("  [%s] * %s\n", timeStr, entry.Description)
+		case "commit":
+			fmt.Printf("  [%s] # %s\n", timeStr, entry.Description)
+		}
+	}
+	fmt.Println("─────────────────────────────────────")
+	fmt.Printf("Full history: %s\n", c.history.FilePath())
+}
+
 func (c *Chat) addFileContext(path string) {
 	content, err := c.exec.ReadFile(path)
 	if err != nil {
@@ -610,8 +775,9 @@ func (c *Chat) sendMessage(msg string) {
 			if c.cfg.UserInterrupts {
 				// Build user interrupt message with the first todo
 				interruptMsg := "STOP. The command failed. "
-				if len(c.pendingTodos) > 0 {
-					interruptMsg += fmt.Sprintf("You MUST run this command now: %s", c.pendingTodos[0])
+				pending := c.todoFile.GetPending()
+				if len(pending) > 0 {
+					interruptMsg += fmt.Sprintf("You MUST run this command now: %s", pending[0].Content)
 				} else {
 					interruptMsg += "Read the error above and fix it before continuing."
 				}
@@ -683,8 +849,9 @@ func (c *Chat) executeTool(tc tools.ToolCall) string {
 
 		if result.Success() && !stderrHasError {
 			// Check if this completes a pending todo - only pop if command is in the todo
-			if len(c.pendingTodos) > 0 {
-				firstTodo := c.pendingTodos[0]
+			pendingItems := c.todoFile.GetPending()
+			if len(pendingItems) > 0 {
+				firstTodo := pendingItems[0].Content
 				// Extract the command from the todo (after "Run: " or "Then re-run: ")
 				todoCmd := firstTodo
 				if strings.HasPrefix(todoCmd, "Run: ") {
@@ -699,8 +866,9 @@ func (c *Chat) executeTool(tc tools.ToolCall) string {
 			}
 
 			// If there are remaining todos, optionally inject user interrupt to continue
-			if len(c.pendingTodos) > 0 && c.cfg.UserInterrupts {
-				nextTodo := c.pendingTodos[0]
+			pendingItems = c.todoFile.GetPending()
+			if len(pendingItems) > 0 && c.cfg.UserInterrupts {
+				nextTodo := pendingItems[0].Content
 				interruptMsg := fmt.Sprintf("Good. Now run the next command: %s", nextTodo)
 				c.client.AddUserInterrupt(interruptMsg)
 				fmt.Printf("\033[33m[User: %s]\033[0m\n", interruptMsg)
@@ -722,7 +890,7 @@ func (c *Chat) executeTool(tc tools.ToolCall) string {
 
 		// Clear old todos and set fresh ones for this error
 		// Clear any existing todos - start fresh with the current fix
-		c.pendingTodos = nil
+		c.clearTodos()
 
 		// Check if the error indicates the command itself is wrong (not just missing prereqs)
 		unfixable := isUnfixableByRerun(stderr) || isUnfixableByRerun(output)
@@ -743,10 +911,11 @@ func (c *Chat) executeTool(tc tools.ToolCall) string {
 		}
 
 		todoList := ""
-		if len(c.pendingTodos) > 0 {
+		todoItems := c.todoFile.GetPending()
+		if len(todoItems) > 0 {
 			todoList = "\n\nREQUIRED TODO STACK (do these in order):\n"
-			for i, todo := range c.pendingTodos {
-				todoList += fmt.Sprintf("%d. %s\n", i+1, todo)
+			for i, todo := range todoItems {
+				todoList += fmt.Sprintf("%d. %s\n", i+1, todo.Content)
 			}
 		}
 
@@ -876,6 +1045,13 @@ DO NOT run other commands. Execute the first TODO item NOW.`, result.ExitCode, s
 		result := c.exec.GitCommitWithVersion(a.Message, bump)
 		output := result.String()
 		fmt.Println(output)
+
+		// Log successful commits to history and changelog
+		if result.Success() {
+			c.history.AddCommit(a.Message, "")
+			c.changelog.Release("") // Move unreleased to dated section on commit
+		}
+
 		return output
 
 	case "git_log":
@@ -945,6 +1121,12 @@ func (c *Chat) handleWriteFile(path, content, fileType string) string {
 		return fmt.Sprintf("Failed to write %s: %v", fileType, err)
 	}
 	fmt.Printf("\033[32m✓ Wrote %s (%d bytes)\033[0m\n", path, len(content))
+
+	// Log to changelog and history
+	desc := fmt.Sprintf("Modified %s", filepath.Base(path))
+	c.changelog.AddEntry("Changed", desc, []string{path})
+	c.history.AddChange(desc, []string{path})
+
 	return fmt.Sprintf("Successfully wrote %d bytes to %s", len(content), path)
 }
 
@@ -1033,6 +1215,9 @@ Commands:
   /version         Show current project version
   /auto            Toggle auto-execute mode
   /permissions     View/manage tool permissions
+  /todos           View/manage persistent todos
+  /changelog       View/add changelog entries
+  /history [n]     View recent project history
   /search <query>  Search the web
   /screenshot      Capture a screenshot
   /sessions        List recorded sessions
@@ -1050,6 +1235,11 @@ Tool Permissions:
 
   Use /permissions to view and manage saved permissions.
 
+Project Files (in project root):
+  TODOS.md     - Persistent todo list (survives across sessions)
+  CHANGELOG.md - Track changes made during sessions
+  HISTORY.md   - Complete activity log (requests, todos, changes, commits)
+
 The AI can:
   - Execute shell commands (builds, tests, etc.)
   - Create/modify source code and documentation
@@ -1060,6 +1250,7 @@ The AI can:
 
 All sessions are automatically saved in .aicli/ for playback.
 Version is auto-bumped on each commit (x.y.z format).
+Pending todos are detected on startup - resume work where you left off!
 `)
 }
 
