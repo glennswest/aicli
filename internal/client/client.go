@@ -573,6 +573,15 @@ func (c *Client) Chat(userMessage string, stream bool, onToken func(string)) (*C
 }
 
 func (c *Client) AddToolResult(toolCallID, result string) {
+	// If model doesn't support native tools, send result as user message
+	// so the model understands it's a tool response
+	if !c.useTools {
+		c.history = append(c.history, Message{
+			Role:    "user",
+			Content: fmt.Sprintf("[Tool Result]:\n%s", result),
+		})
+		return
+	}
 	c.history = append(c.history, Message{
 		Role:       "tool",
 		Content:    result,
