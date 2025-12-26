@@ -183,8 +183,12 @@ func (e *Executor) ListFiles(pattern string) *Result {
 	if pattern == "" {
 		pattern = "."
 	}
-	// Use find with proper grouping for -o clauses, include config files too
-	return e.Run(fmt.Sprintf("find %s -maxdepth 3 -type f \\( -name '*.go' -o -name '*.py' -o -name '*.js' -o -name '*.ts' -o -name '*.rs' -o -name '*.c' -o -name '*.cpp' -o -name '*.h' -o -name 'go.mod' -o -name 'go.sum' -o -name 'package.json' -o -name 'Cargo.toml' -o -name 'requirements.txt' -o -name 'Makefile' \\) 2>/dev/null | head -50", pattern))
+	// If pattern is "*" or ".", list all non-hidden files to show project structure
+	if pattern == "*" || pattern == "." {
+		return e.Run("find . -maxdepth 3 -type f ! -path '*/\\.*' 2>/dev/null | head -50")
+	}
+	// Use find with proper grouping for -o clauses, include config files and docs
+	return e.Run(fmt.Sprintf("find %s -maxdepth 3 -type f \\( -name '*.go' -o -name '*.py' -o -name '*.js' -o -name '*.ts' -o -name '*.rs' -o -name '*.c' -o -name '*.cpp' -o -name '*.h' -o -name '*.md' -o -name 'go.mod' -o -name 'go.sum' -o -name 'package.json' -o -name 'Cargo.toml' -o -name 'requirements.txt' -o -name 'Makefile' \\) 2>/dev/null | head -50", pattern))
 }
 
 // ScreenCapture captures the screen or a window

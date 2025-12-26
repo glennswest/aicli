@@ -247,13 +247,13 @@ func GetTools() []Tool {
 			Type: "function",
 			Function: Function{
 				Name:        "list_files",
-				Description: "List source code files in the project",
+				Description: "List files in the project. Use '*' or '.' to see all files, or specify a directory/pattern for source code files",
 				Parameters: json.RawMessage(`{
 					"type": "object",
 					"properties": {
 						"pattern": {
 							"type": "string",
-							"description": "Directory or pattern to search (default: current directory)"
+							"description": "Use '*' or '.' to list all files, or a directory name to search for source code files (default: current directory)"
 						}
 					}
 				}`),
