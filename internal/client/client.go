@@ -291,6 +291,26 @@ type ModelInfo struct {
 	ID string `json:"id"`
 }
 
+// modelSupportsNativeTools returns false for models known not to support
+// the OpenAI-style tool calling API
+func modelSupportsNativeTools(model string) bool {
+	model = strings.ToLower(model)
+	// Models that don't support native tool calling
+	noToolModels := []string{
+		"gemma",
+		"llama", // most llama variants don't support tools
+		"phi",
+		"mistral",
+		"codellama",
+	}
+	for _, m := range noToolModels {
+		if strings.Contains(model, m) {
+			return false
+		}
+	}
+	return true
+}
+
 func New(cfg *config.Config) *Client {
 	return &Client{
 		cfg: cfg,
@@ -300,7 +320,7 @@ func New(cfg *config.Config) *Client {
 			},
 		},
 		history:  make([]Message, 0),
-		useTools: true,
+		useTools: modelSupportsNativeTools(cfg.Model),
 	}
 }
 
@@ -317,7 +337,7 @@ func NewWithDebug(cfg *config.Config, workDir string) *Client {
 			},
 		},
 		history:  make([]Message, 0),
-		useTools: true,
+		useTools: modelSupportsNativeTools(cfg.Model),
 		debugDir: debugDir,
 		workDir:  workDir,
 	}
