@@ -68,16 +68,16 @@ func main() {
 	// Set the app version for other packages to use
 	config.AppVersion = version
 
-	// Set TLS verification mode for discovery and client
-	if insecure {
-		discovery.InsecureSkipVerify = true
-		client.InsecureSkipVerify = true
-	}
-
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
 		os.Exit(1)
+	}
+
+	// Apply insecure setting from config or command line flag
+	if cfg.Insecure || insecure {
+		discovery.InsecureSkipVerify = true
+		client.InsecureSkipVerify = true
 	}
 
 	// Handle --version early (no Ollama needed)
@@ -358,7 +358,7 @@ func autoDiscoverEndpoint(cfg *config.Config) {
 
 	fmt.Print("\033[33m🔍 No local Ollama found, searching network...\033[0m")
 
-	endpoint, host, useTLS := discovery.AutoDiscover()
+	endpoint, host, useTLS, needsInsecure := discovery.AutoDiscover()
 	if endpoint == "" {
 		fmt.Printf("\r\033[K\033[31m✗ No Ollama instances found on network\033[0m\n")
 		return
@@ -370,6 +370,14 @@ func autoDiscoverEndpoint(cfg *config.Config) {
 		protoIcon = "🔒"
 	}
 	fmt.Printf("\r\033[K\033[32m✓ Discovered Ollama at %s %s\033[0m\n", host, protoIcon)
+
+	// If the endpoint uses a self-signed certificate, enable insecure mode
+	if needsInsecure {
+		cfg.Insecure = true
+		discovery.InsecureSkipVerify = true
+		client.InsecureSkipVerify = true
+		fmt.Printf("\033[33m⚠ Warning: Using self-signed certificate (TLS verification disabled)\033[0m\n")
+	}
 
 	// Save the discovered endpoint to local config
 	if err := cfg.Save(); err != nil {

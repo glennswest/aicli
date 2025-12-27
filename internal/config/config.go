@@ -18,6 +18,10 @@ type Config struct {
 	Temperature  float64 `json:"temperature"`
 	SystemPrompt string  `json:"system_prompt"`
 
+	// Insecure: if true, skip TLS certificate verification
+	// Auto-detected when connecting to endpoints with self-signed certs
+	Insecure bool `json:"insecure,omitempty"`
+
 	// Tool permissions: "always", "ask", or "never" per tool
 	// Tools: write_file, run_command, git_commit, git_add, screenshot, set_version
 	ToolPermissions map[string]string `json:"tool_permissions,omitempty"`
