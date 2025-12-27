@@ -3,6 +3,7 @@ package client
 import (
 	"bufio"
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,6 +18,9 @@ import (
 	"aicli/internal/lang"
 	"aicli/internal/tools"
 )
+
+// InsecureSkipVerify controls whether TLS certificate verification is skipped
+var InsecureSkipVerify bool
 
 // TextToolCall represents a tool call parsed from text output
 type TextToolCall struct {
@@ -311,16 +315,24 @@ func modelSupportsNativeTools(model string) bool {
 	return true
 }
 
-func New(cfg *config.Config) *Client {
-	return &Client{
-		cfg: cfg,
-		httpClient: &http.Client{
-			Transport: &http.Transport{
-				ResponseHeaderTimeout: 60 * time.Second,
+// createHTTPClient creates an HTTP client with appropriate TLS settings
+func createHTTPClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			ResponseHeaderTimeout: 60 * time.Second,
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: InsecureSkipVerify,
 			},
 		},
-		history:  make([]Message, 0),
-		useTools: modelSupportsNativeTools(cfg.Model),
+	}
+}
+
+func New(cfg *config.Config) *Client {
+	return &Client{
+		cfg:        cfg,
+		httpClient: createHTTPClient(),
+		history:    make([]Message, 0),
+		useTools:   modelSupportsNativeTools(cfg.Model),
 	}
 }
 
@@ -330,16 +342,12 @@ func NewWithDebug(cfg *config.Config, workDir string) *Client {
 	os.MkdirAll(debugDir, 0755)
 
 	return &Client{
-		cfg: cfg,
-		httpClient: &http.Client{
-			Transport: &http.Transport{
-				ResponseHeaderTimeout: 60 * time.Second,
-			},
-		},
-		history:  make([]Message, 0),
-		useTools: modelSupportsNativeTools(cfg.Model),
-		debugDir: debugDir,
-		workDir:  workDir,
+		cfg:        cfg,
+		httpClient: createHTTPClient(),
+		history:    make([]Message, 0),
+		useTools:   modelSupportsNativeTools(cfg.Model),
+		debugDir:   debugDir,
+		workDir:    workDir,
 	}
 }
 

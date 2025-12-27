@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"os"
@@ -10,8 +11,10 @@ import (
 	"aicli/internal/chat"
 	"aicli/internal/client"
 	"aicli/internal/config"
+	"aicli/internal/discovery"
 	"aicli/internal/executor"
 	"aicli/internal/session"
+	"aicli/internal/update"
 )
 
 // Version is set at build time via ldflags
@@ -31,6 +34,8 @@ var (
 	listSessions bool
 	showVersion  bool
 	autoMode     bool
+	insecure     bool
+	checkUpdate  bool
 )
 
 func init() {
@@ -52,6 +57,8 @@ func init() {
 	flag.BoolVar(&showVersion, "version", false, "Show project version")
 	flag.BoolVar(&showVersion, "v", false, "Show project version (shorthand)")
 	flag.BoolVar(&autoMode, "auto", false, "Auto-execute mode (skip confirmations)")
+	flag.BoolVar(&insecure, "insecure", false, "Skip TLS certificate verification")
+	flag.BoolVar(&checkUpdate, "update", false, "Check for updates and install if available")
 }
 
 func main() {
@@ -60,6 +67,12 @@ func main() {
 
 	// Set the app version for other packages to use
 	config.AppVersion = version
+
+	// Set TLS verification mode for discovery and client
+	if insecure {
+		discovery.InsecureSkipVerify = true
+		client.InsecureSkipVerify = true
+	}
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -84,6 +97,14 @@ func main() {
 		cfg.Temperature = temperature
 	}
 
+	// Auto-discover Ollama if no config was loaded and endpoint wasn't overridden
+	if cfg.LoadedFrom() == "" && endpoint == "" {
+		autoDiscoverEndpoint(cfg)
+	}
+
+	// Warn if using unencrypted connection (except for localhost)
+	warnIfUnencrypted(cfg.APIEndpoint)
+
 	// Auto-configure model if needed (handles "default" or model mismatch)
 	autoConfigModel(cfg)
 
@@ -95,6 +116,12 @@ func main() {
 		fmt.Printf("aicli version: %s\n", version)
 		v, _ := exec.GetVersion()
 		fmt.Printf("Project version: %s\n", v.String())
+		return
+	}
+
+	// Handle --update
+	if checkUpdate {
+		handleUpdate()
 		return
 	}
 
@@ -317,4 +344,110 @@ func ensureModelLoaded(cfg *config.Config) {
 	}
 
 	fmt.Printf("\r\033[K\033[32m✓ Model %s is ready\033[0m\n", cfg.Model)
+}
+
+// autoDiscoverEndpoint attempts to find an Ollama instance via mDNS
+// if no local Ollama is available
+func autoDiscoverEndpoint(cfg *config.Config) {
+	// Check if local Ollama is available first
+	if discovery.CheckLocalOllama() {
+		return
+	}
+
+	fmt.Print("\033[33m🔍 No local Ollama found, searching network...\033[0m")
+
+	endpoint, host, useTLS := discovery.AutoDiscover()
+	if endpoint == "" {
+		fmt.Printf("\r\033[K\033[31m✗ No Ollama instances found on network\033[0m\n")
+		return
+	}
+
+	cfg.APIEndpoint = endpoint
+	protoIcon := "🔓"
+	if useTLS {
+		protoIcon = "🔒"
+	}
+	fmt.Printf("\r\033[K\033[32m✓ Discovered Ollama at %s %s\033[0m\n", host, protoIcon)
+
+	// Save the discovered endpoint to local config
+	if err := cfg.Save(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to save config: %v\n", err)
+	}
+}
+
+// warnIfUnencrypted warns if the endpoint uses HTTP instead of HTTPS
+// Localhost connections are exempt from the warning
+func warnIfUnencrypted(endpoint string) {
+	// Skip warning for localhost
+	if strings.Contains(endpoint, "localhost") || strings.Contains(endpoint, "127.0.0.1") {
+		return
+	}
+
+	if !discovery.IsEncrypted(endpoint) {
+		fmt.Printf("\033[33m⚠ Warning: Connection is not encrypted (using HTTP)\033[0m\n")
+		fmt.Printf("\033[33m  Data sent to %s may be visible on the network\033[0m\n", endpoint)
+	}
+}
+
+// handleUpdate checks for updates and prompts user to install
+func handleUpdate() {
+	fmt.Printf("Checking for updates...\n")
+
+	info, err := update.CheckForUpdate(version)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\033[31m✗ Failed to check for updates: %v\033[0m\n", err)
+		os.Exit(1)
+	}
+
+	if !update.IsNewerVersion(info.CurrentVersion, info.LatestVersion) {
+		fmt.Printf("\033[32m✓ You are running the latest version (%s)\033[0m\n", version)
+		return
+	}
+
+	fmt.Printf("\n\033[33m⬆ Update available!\033[0m\n")
+	fmt.Printf("  Current version: %s\n", info.CurrentVersion)
+	fmt.Printf("  Latest version:  %s\n", info.LatestVersion)
+	fmt.Printf("  Download size:   %.2f MB\n", float64(info.AssetSize)/(1024*1024))
+
+	if info.ReleaseNotes != "" {
+		fmt.Printf("\nRelease notes:\n")
+		// Show first few lines of release notes
+		lines := strings.Split(info.ReleaseNotes, "\n")
+		for i, line := range lines {
+			if i >= 10 {
+				fmt.Printf("  ...\n")
+				break
+			}
+			fmt.Printf("  %s\n", line)
+		}
+	}
+
+	fmt.Printf("\nDo you want to update? [y/N]: ")
+	reader := bufio.NewReader(os.Stdin)
+	response, err := reader.ReadString('\n')
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error reading input: %v\n", err)
+		os.Exit(1)
+	}
+
+	response = strings.TrimSpace(strings.ToLower(response))
+	if response != "y" && response != "yes" {
+		fmt.Println("Update cancelled.")
+		return
+	}
+
+	fmt.Printf("\nDownloading update...")
+
+	err = update.DownloadAndInstall(info, func(downloaded, total int64) {
+		pct := float64(downloaded) / float64(total) * 100
+		fmt.Printf("\rDownloading update... %.1f%%", pct)
+	})
+
+	if err != nil {
+		fmt.Printf("\n\033[31m✗ Update failed: %v\033[0m\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("\n\033[32m✓ Successfully updated to version %s\033[0m\n", info.LatestVersion)
+	fmt.Println("Please restart aicli to use the new version.")
 }

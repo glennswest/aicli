@@ -22,6 +22,12 @@ A command-line AI coding assistant with tool execution capabilities. Works with 
 - **Changelog tracking** - Automatic logging of file changes and commits
 - **Project history** - Complete activity log of requests, todos, changes, and commits
 
+### Network & Security
+- **mDNS discovery** - Automatically discovers Ollama instances on your local network
+- **TLS/HTTPS support** - Secure encrypted connections to remote Ollama servers
+- **Encryption warnings** - Warns when using unencrypted HTTP connections to remote hosts
+- **Self-update** - Check for and install updates directly from GitHub releases
+
 ## Installation
 
 ### Pre-built Binaries
@@ -225,6 +231,8 @@ Process piped content through the AI.
 | `--sessions` | List recorded sessions |
 | `--playback` | Replay a session file |
 | `--auto` | Auto-execute mode (skip confirmations) |
+| `--insecure` | Skip TLS certificate verification |
+| `--update` | Check for updates and install if available |
 
 ### Chat Commands
 
@@ -496,6 +504,81 @@ aicli creates these files in your project root:
 - Default: patch bump (0.0.1 → 0.0.2)
 - Use `bump:"minor"` or `bump:"major"` for larger bumps
 - Initialize with `./aicli --init`
+
+## Network Discovery
+
+aicli can automatically discover Ollama instances on your local network using mDNS (multicast DNS).
+
+### How It Works
+
+When no configuration file exists and no local Ollama is found at `localhost:11434`:
+
+1. aicli broadcasts an mDNS query for `_ollama._tcp` services
+2. Discovers Ollama servers advertising on the network
+3. Prefers HTTPS endpoints over HTTP
+4. Auto-configures and saves the discovered endpoint
+
+```bash
+$ aicli
+🔍 No local Ollama found, searching network...
+✓ Discovered Ollama at server.local 🔒
+✓ Model qwen2.5:72b is ready
+```
+
+### Encryption Warnings
+
+When connecting to remote Ollama servers over HTTP, aicli warns about unencrypted connections:
+
+```
+⚠ Warning: Connection is not encrypted (using HTTP)
+  Data sent to http://192.168.1.100:11434/v1 may be visible on the network
+```
+
+Localhost connections are exempt from this warning.
+
+### TLS Certificate Verification
+
+For self-signed certificates, use the `--insecure` flag:
+
+```bash
+aicli --insecure -e "https://myserver:443/v1"
+```
+
+## Updates
+
+aicli can check for and install updates directly from GitHub.
+
+### Check for Updates
+
+```bash
+$ aicli --update
+Checking for updates...
+
+⬆ Update available!
+  Current version: 0.4.0
+  Latest version:  0.5.0
+  Download size:   2.49 MB
+
+Release notes:
+  ## What's New
+  - mDNS network discovery
+  - TLS encryption support
+  ...
+
+Do you want to update? [y/N]: y
+
+Downloading update... 100.0%
+✓ Successfully updated to version 0.5.0
+Please restart aicli to use the new version.
+```
+
+### Already Up to Date
+
+```bash
+$ aicli --update
+Checking for updates...
+✓ You are running the latest version (0.5.0)
+```
 
 ## Troubleshooting
 
