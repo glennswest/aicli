@@ -246,23 +246,30 @@ func VerifyEndpointWithCertCheck(endpoint string) (bool, bool) {
 		}
 	}
 
-	// Check if it's a certificate error
-	if err != nil && strings.Contains(err.Error(), "certificate") {
-		// Try with insecure mode
-		insecureClient := &http.Client{
-			Timeout: 3 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{
-					InsecureSkipVerify: true,
+	// Check if it's a TLS/certificate error - try insecure mode
+	// Error messages vary: "certificate", "x509", "tls"
+	if err != nil {
+		errStr := err.Error()
+		isCertError := strings.Contains(errStr, "certificate") ||
+			strings.Contains(errStr, "x509") ||
+			strings.Contains(errStr, "tls:")
+		if isCertError {
+			// Try with insecure mode
+			insecureClient := &http.Client{
+				Timeout: 3 * time.Second,
+				Transport: &http.Transport{
+					TLSClientConfig: &tls.Config{
+						InsecureSkipVerify: true,
+					},
 				},
-			},
-		}
+			}
 
-		resp, err := insecureClient.Get(endpoint + "/models")
-		if err == nil {
-			defer resp.Body.Close()
-			if resp.StatusCode == 200 {
-				return true, true // Works but needs insecure mode
+			resp, err := insecureClient.Get(endpoint + "/models")
+			if err == nil {
+				defer resp.Body.Close()
+				if resp.StatusCode == 200 {
+					return true, true // Works but needs insecure mode
+				}
 			}
 		}
 	}
