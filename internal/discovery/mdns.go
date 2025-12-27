@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"crypto/tls"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"os/exec"
 	"sort"
@@ -54,6 +56,11 @@ func CheckLocalOllama() bool {
 // DiscoverOllama searches for Ollama services via mDNS
 // Returns a list of discovered services, sorted with HTTPS first
 func DiscoverOllama(timeout time.Duration) ([]OllamaService, error) {
+	// Suppress mdns library's debug logging
+	origOutput := log.Writer()
+	log.SetOutput(io.Discard)
+	defer log.SetOutput(origOutput)
+
 	var services []OllamaService
 
 	entriesCh := make(chan *mdns.ServiceEntry, 10)
@@ -135,25 +142,15 @@ func DiscoverOllamaAvahi(timeout time.Duration) ([]OllamaService, error) {
 	// -r: resolve, -p: parseable, -t: terminate after query
 	cmd := exec.Command("avahi-browse", "-rpt", "_ollama._tcp")
 
-	// Set a timeout by running in background and killing if needed
-	done := make(chan error, 1)
-	var output []byte
-	go func() {
-		var err error
-		output, err = cmd.Output()
-		done <- err
-	}()
-
-	select {
-	case err := <-done:
-		if err != nil {
+	// Use CombinedOutput to capture both stdout and stderr
+	// avahi-browse may write info to stderr even on success
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// Check if we got any valid output despite the error
+		// avahi-browse sometimes exits with error but has valid data
+		if len(output) == 0 {
 			return nil, fmt.Errorf("avahi-browse failed: %w", err)
 		}
-	case <-time.After(timeout + 2*time.Second):
-		if cmd.Process != nil {
-			cmd.Process.Kill()
-		}
-		return nil, fmt.Errorf("avahi-browse timed out")
 	}
 
 	var services []OllamaService
