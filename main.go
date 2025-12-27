@@ -80,6 +80,22 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Handle --version early (no Ollama needed)
+	if showVersion {
+		workDir, _ := os.Getwd()
+		exec := executor.New(workDir)
+		fmt.Printf("aicli version: %s\n", version)
+		v, _ := exec.GetVersion()
+		fmt.Printf("Project version: %s\n", v.String())
+		return
+	}
+
+	// Handle --update early (no Ollama needed)
+	if checkUpdate {
+		handleUpdate()
+		return
+	}
+
 	// Override config with flags
 	if endpoint != "" {
 		cfg.APIEndpoint = endpoint
@@ -110,20 +126,6 @@ func main() {
 
 	workDir, _ := os.Getwd()
 	exec := executor.New(workDir)
-
-	// Handle --version
-	if showVersion {
-		fmt.Printf("aicli version: %s\n", version)
-		v, _ := exec.GetVersion()
-		fmt.Printf("Project version: %s\n", v.String())
-		return
-	}
-
-	// Handle --update
-	if checkUpdate {
-		handleUpdate()
-		return
-	}
 
 	// Handle --init
 	if initConfig {
