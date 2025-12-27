@@ -6,7 +6,6 @@ set -e
 
 REPO="glennswest/aicli"
 BINARY_NAME="aicli"
-INSTALL_DIR="${INSTALL_DIR:-$HOME/bin}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -17,6 +16,50 @@ NC='\033[0m' # No Color
 info() { echo -e "${GREEN}==>${NC} $1"; }
 warn() { echo -e "${YELLOW}==>${NC} $1"; }
 error() { echo -e "${RED}==>${NC} $1"; exit 1; }
+
+# Find best install directory from PATH
+find_install_dir() {
+    # If INSTALL_DIR is explicitly set, use it
+    if [ -n "$INSTALL_DIR" ]; then
+        echo "$INSTALL_DIR"
+        return
+    fi
+
+    # Preferred directories in order of preference
+    local preferred_dirs=(
+        "/usr/local/bin"
+        "/opt/homebrew/bin"
+        "$HOME/.local/bin"
+        "$HOME/bin"
+    )
+
+    # First, check preferred directories that exist and are in PATH
+    for dir in "${preferred_dirs[@]}"; do
+        if [ -d "$dir" ] && [[ ":$PATH:" == *":$dir:"* ]]; then
+            # Check if we can write to it (or use sudo for system dirs)
+            if [ -w "$dir" ] || [[ "$dir" == /usr/local/bin ]]; then
+                echo "$dir"
+                return
+            fi
+        fi
+    done
+
+    # Second, look for any writable directory in PATH
+    IFS=':' read -ra path_dirs <<< "$PATH"
+    for dir in "${path_dirs[@]}"; do
+        # Skip system directories we shouldn't write to directly
+        case "$dir" in
+            /bin|/usr/bin|/sbin|/usr/sbin) continue ;;
+        esac
+        if [ -d "$dir" ] && [ -w "$dir" ]; then
+            echo "$dir"
+            return
+        fi
+    done
+
+    # Fall back to /usr/local/bin (will need sudo)
+    echo "/usr/local/bin"
+}
 
 # Detect OS and architecture
 detect_platform() {
@@ -87,30 +130,29 @@ download_and_install() {
         tar -xzf "aicli.$EXT"
     fi
 
+    # Determine if we need sudo
+    SUDO=""
+    if [ ! -w "$INSTALL_DIR" ]; then
+        if command -v sudo &> /dev/null; then
+            SUDO="sudo"
+            info "Need sudo to install to $INSTALL_DIR"
+        else
+            error "Cannot write to $INSTALL_DIR and sudo is not available"
+        fi
+    fi
+
     # Create install directory if needed
-    mkdir -p "$INSTALL_DIR"
+    $SUDO mkdir -p "$INSTALL_DIR"
 
     # Install
     info "Installing to $INSTALL_DIR..."
-    mv "$BINARY_NAME" "$INSTALL_DIR/"
-    chmod +x "$INSTALL_DIR/$BINARY_NAME"
+    $SUDO mv "$BINARY_NAME" "$INSTALL_DIR/"
+    $SUDO chmod +x "$INSTALL_DIR/$BINARY_NAME"
 
     # Sign on macOS
     if [ "$OS" = "darwin" ]; then
         info "Signing binary for macOS..."
-        codesign --force --sign - "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
-    fi
-}
-
-# Check if install dir is in PATH
-check_path() {
-    if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
-        warn "$INSTALL_DIR is not in your PATH"
-        echo ""
-        echo "Add this to your shell profile (~/.bashrc, ~/.zshrc, etc.):"
-        echo ""
-        echo "  export PATH=\"\$HOME/bin:\$PATH\""
-        echo ""
+        $SUDO codesign --force --sign - "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
     fi
 }
 
@@ -124,9 +166,12 @@ main() {
     detect_platform
     info "Detected platform: $PLATFORM"
 
+    # Find best install directory
+    INSTALL_DIR=$(find_install_dir)
+    info "Install directory: $INSTALL_DIR"
+
     get_latest_version
     download_and_install
-    check_path
 
     echo ""
     info "Installation complete!"
