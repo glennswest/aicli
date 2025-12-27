@@ -147,18 +147,14 @@ func AutoDiscover() (endpoint string, host string, useTLS bool) {
 	}
 
 	// Services are already sorted with HTTPS first
-	// Verify discovered services and return the first working one
+	// Only return verified Ollama endpoints
 	for _, svc := range services {
 		if VerifyEndpoint(svc.Endpoint) {
 			return svc.Endpoint, svc.Host, svc.TLS
 		}
 	}
 
-	// Return first discovered even if not verified (might be starting up)
-	if len(services) > 0 {
-		return services[0].Endpoint, services[0].Host, services[0].TLS
-	}
-
+	// Don't return unverified endpoints - they might not be Ollama servers
 	return "", "", false
 }
 
