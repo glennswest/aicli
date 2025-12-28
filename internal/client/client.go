@@ -3,6 +3,7 @@ package client
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -627,6 +628,213 @@ func (c *Client) AddUserInterrupt(message string) {
 
 func (c *Client) ContinueWithToolResults(stream bool, onToken func(string)) (*ChatResult, error) {
 	return c.sendRequest(stream, onToken)
+}
+
+// ChatWithContext sends a chat message with context for cancellation
+func (c *Client) ChatWithContext(ctx context.Context, userMessage string, stream bool, onToken func(string)) (*ChatResult, error) {
+	c.history = append(c.history, Message{
+		Role:    "user",
+		Content: userMessage,
+	})
+	return c.sendRequestWithContext(ctx, stream, onToken)
+}
+
+// ContinueWithToolResultsContext continues with tool results with context for cancellation
+func (c *Client) ContinueWithToolResultsContext(ctx context.Context, stream bool, onToken func(string)) (*ChatResult, error) {
+	return c.sendRequestWithContext(ctx, stream, onToken)
+}
+
+func (c *Client) sendRequestWithContext(ctx context.Context, stream bool, onToken func(string)) (*ChatResult, error) {
+	c.requestNum++
+
+	req := ChatRequest{
+		Model:       c.cfg.Model,
+		Messages:    c.history,
+		MaxTokens:   c.cfg.MaxTokens,
+		Temperature: c.cfg.Temperature,
+		Stream:      stream,
+	}
+
+	if c.useTools {
+		req.Tools = tools.GetTools()
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	c.logDebug("request", body)
+
+	endpoint := strings.TrimSuffix(c.cfg.APIEndpoint, "/") + "/chat/completions"
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	if c.cfg.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+	}
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		if ctx.Err() == context.Canceled {
+			return &ChatResult{FinishReason: "interrupted"}, nil
+		}
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		c.logDebug("error", bodyBytes)
+
+		errStr := string(bodyBytes)
+		if resp.StatusCode == http.StatusBadRequest &&
+			strings.Contains(errStr, "does not support tools") && c.useTools {
+			c.useTools = false
+			resp.Body.Close()
+			return c.sendRequestWithContext(ctx, stream, onToken)
+		}
+
+		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, errStr)
+	}
+
+	var result *ChatResult
+
+	if stream {
+		result, err = c.handleStreamResponseWithContext(ctx, resp.Body, onToken)
+		if err != nil && ctx.Err() != context.Canceled {
+			return nil, err
+		}
+	} else {
+		var chatResp ChatResponse
+		respBody, _ := io.ReadAll(resp.Body)
+		c.logDebug("response", respBody)
+		if err := json.Unmarshal(respBody, &chatResp); err != nil {
+			return nil, fmt.Errorf("failed to decode response: %w", err)
+		}
+		result = &ChatResult{}
+		if len(chatResp.Choices) > 0 {
+			choice := chatResp.Choices[0]
+			result.Content = choice.Message.Content
+			result.ToolCalls = choice.Message.ToolCalls
+			result.FinishReason = choice.FinishReason
+		}
+	}
+
+	if resultJSON, err := json.Marshal(result); err == nil {
+		c.logDebug("result", resultJSON)
+	}
+
+	msg := Message{
+		Role:    "assistant",
+		Content: result.Content,
+	}
+	if len(result.ToolCalls) > 0 {
+		msg.ToolCalls = result.ToolCalls
+	}
+	c.history = append(c.history, msg)
+
+	return result, nil
+}
+
+func (c *Client) handleStreamResponseWithContext(ctx context.Context, body io.ReadCloser, onToken func(string)) (*ChatResult, error) {
+	done := make(chan struct{})
+	defer close(done)
+
+	// Close body on context cancellation to unblock scanner
+	go func() {
+		select {
+		case <-ctx.Done():
+			body.Close()
+		case <-done:
+		}
+	}()
+
+	scanner := bufio.NewScanner(body)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
+	result := &ChatResult{}
+	var contentBuilder strings.Builder
+	toolCallsMap := make(map[int]*tools.ToolCall)
+
+	for scanner.Scan() {
+		// Check for cancellation
+		select {
+		case <-ctx.Done():
+			result.Content = contentBuilder.String()
+			result.FinishReason = "interrupted"
+			for _, tc := range toolCallsMap {
+				result.ToolCalls = append(result.ToolCalls, *tc)
+			}
+			return result, nil
+		default:
+		}
+
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		var chunk ChatResponse
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue
+		}
+
+		if len(chunk.Choices) > 0 {
+			choice := chunk.Choices[0]
+
+			if choice.Delta.Content != "" {
+				contentBuilder.WriteString(choice.Delta.Content)
+				if onToken != nil {
+					onToken(choice.Delta.Content)
+				}
+			}
+
+			for _, tc := range choice.Delta.ToolCalls {
+				idx := tc.Index
+				if existing, ok := toolCallsMap[idx]; ok {
+					existing.Function.Arguments += tc.Function.Arguments
+					if tc.ID != "" {
+						existing.ID = tc.ID
+					}
+				} else {
+					newTC := tc
+					if newTC.ID == "" {
+						newTC.ID = fmt.Sprintf("call_%d", idx)
+					}
+					toolCallsMap[idx] = &newTC
+				}
+			}
+
+			result.FinishReason = choice.FinishReason
+		}
+	}
+
+	// Check if cancelled
+	if ctx.Err() == context.Canceled {
+		result.Content = contentBuilder.String()
+		result.FinishReason = "interrupted"
+		for _, tc := range toolCallsMap {
+			result.ToolCalls = append(result.ToolCalls, *tc)
+		}
+		return result, nil
+	}
+
+	result.Content = contentBuilder.String()
+	for _, tc := range toolCallsMap {
+		result.ToolCalls = append(result.ToolCalls, *tc)
+	}
+
+	return result, scanner.Err()
 }
 
 func (c *Client) sendRequest(stream bool, onToken func(string)) (*ChatResult, error) {

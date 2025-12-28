@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,23 +14,26 @@ import (
 	"aicli/internal/client"
 	"aicli/internal/config"
 	"aicli/internal/executor"
+	"aicli/internal/keylistener"
 	"aicli/internal/session"
 	"aicli/internal/tools"
 	"aicli/internal/web"
 )
 
 type Chat struct {
-	client    *client.Client
-	cfg       *config.Config
-	rl        *readline.Instance
-	exec      *executor.Executor
-	web       *web.WebSearch
-	recorder  *session.Recorder
-	todoFile  *session.TodoFile
-	changelog *session.ChangelogFile
-	history   *session.HistoryFile
-	autoExec  bool
-	playback  *session.Playback
+	client        *client.Client
+	cfg           *config.Config
+	rl            *readline.Instance
+	exec          *executor.Executor
+	web           *web.WebSearch
+	recorder      *session.Recorder
+	todoFile      *session.TodoFile
+	changelog     *session.ChangelogFile
+	history       *session.HistoryFile
+	autoExec      bool
+	playback      *session.Playback
+	keyListener   *keylistener.Listener
+	followUpInput string
 }
 
 func New(cfg *config.Config) (*Chat, error) {
@@ -52,16 +56,17 @@ func New(cfg *config.Config) (*Chat, error) {
 	c := client.NewWithDebug(cfg, workDir)
 
 	return &Chat{
-		client:    c,
-		cfg:       cfg,
-		rl:        rl,
-		exec:      exec,
-		web:       web.NewSearch(),
-		recorder:  session.NewRecorder(workDir),
-		todoFile:  session.NewTodoFile(workDir),
-		changelog: session.NewChangelogFile(workDir),
-		history:   session.NewHistoryFile(workDir),
-		autoExec:  false,
+		client:      c,
+		cfg:         cfg,
+		rl:          rl,
+		exec:        exec,
+		web:         web.NewSearch(),
+		recorder:    session.NewRecorder(workDir),
+		todoFile:    session.NewTodoFile(workDir),
+		changelog:   session.NewChangelogFile(workDir),
+		history:     session.NewHistoryFile(workDir),
+		autoExec:    false,
+		keyListener: keylistener.New(),
 	}, nil
 }
 
@@ -250,12 +255,22 @@ func (c *Chat) Run() error {
 	}
 
 	for {
-		line, err := c.rl.Readline()
-		if err == readline.ErrInterrupt {
-			continue
-		}
-		if err == io.EOF {
-			break
+		var line string
+		var err error
+
+		// Check if there's buffered follow-up input from during streaming
+		if c.followUpInput != "" {
+			line = c.followUpInput
+			c.followUpInput = ""
+			fmt.Printf("\033[36m>>> %s\033[0m\n", line) // Echo the captured input
+		} else {
+			line, err = c.rl.Readline()
+			if err == readline.ErrInterrupt {
+				continue
+			}
+			if err == io.EOF {
+				break
+			}
 		}
 
 		line = strings.TrimSpace(line)
@@ -760,22 +775,123 @@ func extToLang(ext string) string {
 	return ""
 }
 
+// streamWithInterrupt runs AI streaming with escape key detection
+func (c *Chat) streamWithInterrupt(sendFunc func(context.Context) (*client.ChatResult, error)) (*client.ChatResult, bool) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() {
+		cancel()
+		c.keyListener.Stop()
+	}()
+
+	// Start key listener for raw terminal input
+	if err := c.keyListener.Start(); err != nil {
+		// Fall back to non-interruptible streaming
+		result, _ := sendFunc(ctx)
+		return result, false
+	}
+
+	// Channel for streaming result
+	type streamResult struct {
+		result *client.ChatResult
+		err    error
+	}
+	resultCh := make(chan streamResult, 1)
+
+	// Run streaming in goroutine
+	go func() {
+		result, err := sendFunc(ctx)
+		resultCh <- streamResult{result, err}
+	}()
+
+	// Monitor for key events
+	for {
+		select {
+		case event := <-c.keyListener.Events():
+			if event.Key == keylistener.KeyEscape {
+				// Cancel the streaming
+				cancel()
+				// Wait for streaming to finish
+				res := <-resultCh
+				// Capture any buffered follow-up input
+				c.followUpInput = c.keyListener.GetBufferedInput()
+				fmt.Print("\r\033[K\033[33m[Interrupted]\033[0m\n")
+				return res.result, true
+			}
+
+		case res := <-resultCh:
+			// Streaming completed normally
+			c.followUpInput = c.keyListener.GetBufferedInput()
+			if res.err != nil {
+				return nil, false
+			}
+			return res.result, false
+		}
+	}
+}
+
+// execWithInterrupt runs a command with escape key interruption support
+func (c *Chat) execWithInterrupt(command string) *executor.Result {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() {
+		cancel()
+		c.keyListener.Stop()
+	}()
+
+	// Start key listener
+	if err := c.keyListener.Start(); err != nil {
+		return c.exec.Run(command)
+	}
+
+	// Channel for result
+	resultCh := make(chan *executor.Result, 1)
+	go func() {
+		resultCh <- c.exec.RunWithContext(ctx, command)
+	}()
+
+	// Monitor for escape
+	for {
+		select {
+		case event := <-c.keyListener.Events():
+			if event.Key == keylistener.KeyEscape {
+				cancel()
+				result := <-resultCh
+				fmt.Print("\n\033[33m[Command interrupted]\033[0m\n")
+				return result
+			}
+		case result := <-resultCh:
+			return result
+		}
+	}
+}
+
 func (c *Chat) sendMessage(msg string) {
 	tokenCount := 0
-	fmt.Print("\033[90mThinking...\033[0m")
+	fmt.Print("\033[90mThinking... (Esc to interrupt)\033[0m")
 	os.Stdout.Sync()
 
-	result, err := c.client.Chat(msg, true, func(token string) {
-		tokenCount++
-		fmt.Printf("\r\033[K\033[90mThinking... [%d tokens]\033[0m", tokenCount)
-		os.Stdout.Sync()
+	result, interrupted := c.streamWithInterrupt(func(ctx context.Context) (*client.ChatResult, error) {
+		return c.client.ChatWithContext(ctx, msg, true, func(token string) {
+			tokenCount++
+			fmt.Printf("\r\033[K\033[90mThinking... [%d tokens] (Esc to interrupt)\033[0m", tokenCount)
+			os.Stdout.Sync()
+		})
 	})
 
 	// Clear the "Thinking..." status
 	fmt.Print("\r\033[K")
 
-	if err != nil {
-		fmt.Printf("\033[31mError: %v\033[0m\n", err)
+	if result == nil {
+		fmt.Printf("\033[31mError: failed to get response\033[0m\n")
+		return
+	}
+
+	// If interrupted, show partial content and return
+	if interrupted {
+		if result.Content != "" {
+			fmt.Print(result.Content)
+			c.recorder.RecordAssistant(result.Content + " [interrupted]")
+		}
+		fmt.Println()
 		return
 	}
 
@@ -798,16 +914,26 @@ func (c *Chat) sendMessage(msg string) {
 		c.client.AddUserInterrupt("You described what you want to do but didn't execute it. Use the tool NOW - do not show code, just call the tool.")
 
 		tokenCount = 0
-		fmt.Print("\033[90mThinking...\033[0m")
+		fmt.Print("\033[90mThinking... (Esc to interrupt)\033[0m")
 		os.Stdout.Sync()
-		result, err = c.client.ContinueWithToolResults(true, func(token string) {
-			tokenCount++
-			fmt.Printf("\r\033[K\033[90mThinking... [%d tokens]\033[0m", tokenCount)
-			os.Stdout.Sync()
+		result, interrupted = c.streamWithInterrupt(func(ctx context.Context) (*client.ChatResult, error) {
+			return c.client.ContinueWithToolResultsContext(ctx, true, func(token string) {
+				tokenCount++
+				fmt.Printf("\r\033[K\033[90mThinking... [%d tokens] (Esc to interrupt)\033[0m", tokenCount)
+				os.Stdout.Sync()
+			})
 		})
 		fmt.Print("\r\033[K")
-		if err != nil {
-			fmt.Printf("\033[31mError: %v\033[0m\n", err)
+		if result == nil {
+			fmt.Printf("\033[31mError: failed to get response\033[0m\n")
+			return
+		}
+		if interrupted {
+			if result.Content != "" {
+				fmt.Print(result.Content)
+				c.recorder.RecordAssistant(result.Content + " [interrupted]")
+			}
+			fmt.Println()
 			return
 		}
 
@@ -863,16 +989,26 @@ func (c *Chat) sendMessage(msg string) {
 		}
 
 		tokenCount = 0
-		fmt.Print("\033[90mThinking...\033[0m")
+		fmt.Print("\033[90mThinking... (Esc to interrupt)\033[0m")
 		os.Stdout.Sync()
-		result, err = c.client.ContinueWithToolResults(true, func(token string) {
-			tokenCount++
-			fmt.Printf("\r\033[K\033[90mThinking... [%d tokens]\033[0m", tokenCount)
-			os.Stdout.Sync()
+		result, interrupted = c.streamWithInterrupt(func(ctx context.Context) (*client.ChatResult, error) {
+			return c.client.ContinueWithToolResultsContext(ctx, true, func(token string) {
+				tokenCount++
+				fmt.Printf("\r\033[K\033[90mThinking... [%d tokens] (Esc to interrupt)\033[0m", tokenCount)
+				os.Stdout.Sync()
+			})
 		})
 		fmt.Print("\r\033[K")
-		if err != nil {
-			fmt.Printf("\033[31mError: %v\033[0m\n", err)
+		if result == nil {
+			fmt.Printf("\033[31mError: failed to get response\033[0m\n")
+			return
+		}
+		if interrupted {
+			if result.Content != "" {
+				fmt.Print(result.Content)
+				c.recorder.RecordAssistant(result.Content + " [interrupted]")
+			}
+			fmt.Println()
 			return
 		}
 
@@ -903,13 +1039,13 @@ func (c *Chat) executeTool(tc tools.ToolCall) string {
 	case "run_command":
 		var a tools.RunCommandArgs
 		json.Unmarshal([]byte(args), &a)
-		fmt.Printf("\033[90m$ %s\033[0m\n", a.Command)
+		fmt.Printf("\033[90m$ %s (Esc to interrupt)\033[0m\n", a.Command)
 
 		if !c.confirmTool("run_command", fmt.Sprintf("Execute command: %s", a.Command)) {
 			return "OPERATION FAILED: User declined to execute command. The command was NOT run."
 		}
 
-		result := c.exec.Run(a.Command)
+		result := c.execWithInterrupt(a.Command)
 		output := result.String()
 		stderr := result.Error // Get stderr specifically
 		// Output is already streamed during execution, no need to print again
@@ -1325,8 +1461,7 @@ The AI can:
 
 All sessions are automatically saved in .aicli/ for playback.
 Version is auto-bumped on each commit (x.y.z format).
-Pending todos are detected on startup - resume work where you left off!
-`)
+Pending todos are detected on startup - resume work where you left off!`)
 }
 
 func (c *Chat) printConfig() {

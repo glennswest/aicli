@@ -108,6 +108,54 @@ func (e *Executor) Run(command string) *Result {
 	return result
 }
 
+// RunWithContext executes a command with the provided context for cancellation
+func (e *Executor) RunWithContext(ctx context.Context, command string) *Result {
+	start := time.Now()
+
+	// Create a child context with timeout if parent doesn't have a deadline
+	execCtx := ctx
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		execCtx, cancel = context.WithTimeout(ctx, e.timeout)
+		defer cancel()
+	}
+
+	cmd := exec.CommandContext(execCtx, "sh", "-c", command)
+	cmd.Dir = e.workDir
+
+	// Inherit environment and add common tool paths
+	cmd.Env = os.Environ()
+	cmd.Env = append(cmd.Env, e.getExtendedPath())
+
+	var stdout, stderr bytes.Buffer
+	// Stream output to terminal while also capturing it
+	cmd.Stdout = io.MultiWriter(&stdout, os.Stdout)
+	cmd.Stderr = io.MultiWriter(&stderr, os.Stderr)
+
+	err := cmd.Run()
+
+	result := &Result{
+		Command:  command,
+		Output:   stdout.String(),
+		Error:    stderr.String(),
+		Duration: time.Since(start),
+	}
+
+	if err != nil {
+		if ctx.Err() == context.Canceled {
+			result.Error = "Command interrupted by user"
+			result.ExitCode = -2
+		} else if exitErr, ok := err.(*exec.ExitError); ok {
+			result.ExitCode = exitErr.ExitCode()
+		} else {
+			result.ExitCode = -1
+			result.Error = err.Error()
+		}
+	}
+
+	return result
+}
+
 func (e *Executor) WriteFile(path, content string) error {
 	fullPath := path
 	if !filepath.IsAbs(path) {
