@@ -188,10 +188,32 @@ func (e *Executor) ReadFile(path string) (string, error) {
 		fullPath = filepath.Join(e.workDir, path)
 	}
 
+	// Check for binary/image files that can't be read as text
+	ext := strings.ToLower(filepath.Ext(fullPath))
+	binaryExts := map[string]bool{
+		".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".bmp": true,
+		".ico": true, ".webp": true, ".tiff": true, ".svg": true,
+		".pdf": true, ".doc": true, ".docx": true, ".xls": true, ".xlsx": true,
+		".zip": true, ".tar": true, ".gz": true, ".rar": true, ".7z": true,
+		".exe": true, ".dll": true, ".so": true, ".dylib": true,
+		".bin": true, ".dat": true, ".db": true, ".sqlite": true,
+		".mp3": true, ".mp4": true, ".wav": true, ".avi": true, ".mov": true,
+		".o": true, ".a": true, ".pyc": true, ".class": true,
+	}
+	if binaryExts[ext] {
+		return "", fmt.Errorf("cannot read binary file %s - this file type (%s) is not supported for text reading", filepath.Base(fullPath), ext)
+	}
+
 	content, err := os.ReadFile(fullPath)
 	if err != nil {
 		return "", err
 	}
+
+	// Additional check: detect binary content by looking for null bytes
+	if bytes.Contains(content, []byte{0}) {
+		return "", fmt.Errorf("cannot read %s - file appears to be binary (contains null bytes)", filepath.Base(fullPath))
+	}
+
 	return string(content), nil
 }
 
