@@ -23,6 +23,7 @@ type KeyEvent struct {
 type Listener struct {
 	stopCh   chan struct{}
 	doneCh   chan struct{} // signals readLoop has exited
+	doneOnce sync.Once     // ensures doneCh is only closed once
 	eventCh  chan KeyEvent
 	inputBuf []rune
 	bufMu    sync.Mutex
@@ -74,6 +75,7 @@ func (l *Listener) Start() error {
 	l.active = true
 	l.stopCh = make(chan struct{})
 	l.doneCh = make(chan struct{})
+	l.doneOnce = sync.Once{} // reset for new cycle
 	l.eventCh = make(chan KeyEvent, 10)
 
 	go l.readLoop()
@@ -99,10 +101,12 @@ func (l *Listener) Stop() {
 
 func (l *Listener) readLoop() {
 	defer func() {
-		// Signal that readLoop has exited
-		if l.doneCh != nil {
-			close(l.doneCh)
-		}
+		// Signal that readLoop has exited (only once)
+		l.doneOnce.Do(func() {
+			if l.doneCh != nil {
+				close(l.doneCh)
+			}
+		})
 	}()
 
 	buf := make([]byte, 1)
