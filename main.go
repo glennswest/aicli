@@ -233,6 +233,7 @@ func main() {
 
 	// Interactive chat mode
 	ensureModelLoaded(cfg)
+	checkUpdateOnStartup()
 	runInteractive(cfg)
 }
 
@@ -403,6 +404,18 @@ func warnIfUnencrypted(endpoint string) {
 	if !discovery.IsEncrypted(endpoint) {
 		fmt.Printf("\033[33m⚠ Warning: Connection is not encrypted (using HTTP)\033[0m\n")
 		fmt.Printf("\033[33m  Data sent to %s may be visible on the network\033[0m\n", endpoint)
+	}
+}
+
+// checkUpdateOnStartup silently checks for updates and notifies user if available
+func checkUpdateOnStartup() {
+	info, err := update.CheckForUpdate(version)
+	if err != nil {
+		return // Silently fail - don't interrupt startup
+	}
+
+	if update.IsNewerVersion(info.CurrentVersion, info.LatestVersion) {
+		fmt.Printf("\033[33m⬆ Update available: %s → %s (run with --update to install)\033[0m\n\n", info.CurrentVersion, info.LatestVersion)
 	}
 }
 
