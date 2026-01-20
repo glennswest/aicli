@@ -29,6 +29,9 @@ type OllamaService struct {
 // InsecureSkipVerify controls whether TLS certificate verification is skipped
 var InsecureSkipVerify bool
 
+// Debug enables verbose logging for discovery troubleshooting
+var Debug bool
+
 // getHTTPClient returns an HTTP client with appropriate TLS settings
 func getHTTPClient() *http.Client {
 	transport := &http.Transport{
@@ -142,6 +145,9 @@ func DiscoverOllamaDnsSd(timeout time.Duration) ([]OllamaService, error) {
 	// dns-sd runs continuously, so we need to kill it after timeout
 	browseCmd := exec.Command("dns-sd", "-B", "_ollama._tcp", "local")
 	browseOut, err := runWithTimeout(browseCmd, timeout)
+	if Debug {
+		fmt.Printf("[DEBUG] dns-sd browse output (%d bytes):\n%s\n", len(browseOut), string(browseOut))
+	}
 	if err != nil && len(browseOut) == 0 {
 		return nil, fmt.Errorf("dns-sd browse failed: %w", err)
 	}
@@ -159,6 +165,9 @@ func DiscoverOllamaDnsSd(timeout time.Duration) ([]OllamaService, error) {
 		// Parse: "14:29:58.104  Add  3  14 local.  _ollama._tcp.  ServiceName"
 		// Fields: [0]=timestamp [1]=A/R [2]=flags [3]=if [4]=domain [5]=type [6+]=name
 		fields := strings.Fields(line)
+		if Debug {
+			fmt.Printf("[DEBUG] browse line fields: %v\n", fields)
+		}
 		if len(fields) >= 7 && fields[1] == "Add" {
 			// Service name is at index 6+ (may contain spaces, so join remaining)
 			name := strings.Join(fields[6:], " ")
@@ -166,6 +175,9 @@ func DiscoverOllamaDnsSd(timeout time.Duration) ([]OllamaService, error) {
 		}
 	}
 
+	if Debug {
+		fmt.Printf("[DEBUG] found service names: %v\n", serviceNames)
+	}
 	if len(serviceNames) == 0 {
 		return nil, fmt.Errorf("no services found")
 	}
@@ -173,9 +185,18 @@ func DiscoverOllamaDnsSd(timeout time.Duration) ([]OllamaService, error) {
 	// Resolve each service with dns-sd -L
 	var services []OllamaService
 	for _, name := range serviceNames {
+		if Debug {
+			fmt.Printf("[DEBUG] resolving service: %s\n", name)
+		}
 		resolveCmd := exec.Command("dns-sd", "-L", name, "_ollama._tcp", "local")
 		resolveOut, err := runWithTimeout(resolveCmd, 2*time.Second)
+		if Debug {
+			fmt.Printf("[DEBUG] resolve output for %s (%d bytes):\n%s\n", name, len(resolveOut), string(resolveOut))
+		}
 		if err != nil || len(resolveOut) == 0 {
+			if Debug {
+				fmt.Printf("[DEBUG] resolve failed for %s: err=%v, len=%d\n", name, err, len(resolveOut))
+			}
 			continue
 		}
 
@@ -205,7 +226,14 @@ func DiscoverOllamaDnsSd(timeout time.Duration) ([]OllamaService, error) {
 			}
 		}
 
+		if Debug {
+			fmt.Printf("[DEBUG] parsed: host=%s, port=%d, useTLS=%v\n", host, port, useTLS)
+		}
+
 		if host == "" || port == 0 {
+			if Debug {
+				fmt.Printf("[DEBUG] skipping service %s: host or port not found\n", name)
+			}
 			continue
 		}
 
@@ -218,6 +246,9 @@ func DiscoverOllamaDnsSd(timeout time.Duration) ([]OllamaService, error) {
 			// Try without .local suffix
 			cleanHost := strings.TrimSuffix(host, ".local")
 			ip = resolveHostToIP(cleanHost+".local", 2*time.Second)
+		}
+		if Debug {
+			fmt.Printf("[DEBUG] IP resolution for %s: %s\n", host, ip)
 		}
 
 		// Use hostname directly if IP resolution fails (macOS can resolve .local natively)
@@ -238,6 +269,9 @@ func DiscoverOllamaDnsSd(timeout time.Duration) ([]OllamaService, error) {
 			IP:       ip,
 			TLS:      useTLS,
 			Endpoint: fmt.Sprintf("%s://%s:%d/v1", proto, endpointHost, port),
+		}
+		if Debug {
+			fmt.Printf("[DEBUG] created service: %+v\n", svc)
 		}
 		services = append(services, svc)
 	}
@@ -459,22 +493,27 @@ func VerifyEndpointWithCertCheck(endpoint string) (bool, bool) {
 }
 
 // AutoDiscover attempts to find an Ollama instance:
-// 1. Check localhost first
-// 2. If not found, use mDNS discovery (Go library first, then platform-specific fallback)
+// 1. Try mDNS discovery first (Go library, then platform-specific fallbacks)
+// 2. Fall back to localhost if no network services found
 // Returns the endpoint URL, host, whether TLS is used, and whether insecure mode is needed
 func AutoDiscover() (endpoint string, host string, useTLS bool, needsInsecure bool) {
-	// First check localhost
-	if CheckLocalOllama() {
-		return "http://localhost:11434/v1", "localhost", false, false
+	if Debug {
+		fmt.Println("[DEBUG] Starting AutoDiscover")
 	}
 
 	// Try Go mDNS library first
 	services, err := DiscoverOllama(3 * time.Second)
+	if Debug {
+		fmt.Printf("[DEBUG] Go mDNS: found %d services, err=%v\n", len(services), err)
+	}
 
 	// If Go mDNS fails or finds nothing, try platform-specific fallbacks
 	if err != nil || len(services) == 0 {
 		// Try avahi-browse (Linux)
 		avahiServices, avahiErr := DiscoverOllamaAvahi(5 * time.Second)
+		if Debug {
+			fmt.Printf("[DEBUG] avahi-browse: found %d services, err=%v\n", len(avahiServices), avahiErr)
+		}
 		if avahiErr == nil && len(avahiServices) > 0 {
 			services = avahiServices
 		}
@@ -483,34 +522,51 @@ func AutoDiscover() (endpoint string, host string, useTLS bool, needsInsecure bo
 	// If still nothing, try dns-sd (macOS)
 	if len(services) == 0 {
 		dnssdServices, dnssdErr := DiscoverOllamaDnsSd(5 * time.Second)
+		if Debug {
+			fmt.Printf("[DEBUG] dns-sd: found %d services, err=%v\n", len(dnssdServices), dnssdErr)
+		}
 		if dnssdErr == nil && len(dnssdServices) > 0 {
 			services = dnssdServices
 		}
-	}
-
-	if len(services) == 0 {
-		return "", "", false, false
 	}
 
 	// Services are already sorted with HTTPS first
 	// Only return verified Ollama endpoints
 	// For HTTPS endpoints, check certificate validity
 	for _, svc := range services {
+		if Debug {
+			fmt.Printf("[DEBUG] verifying service: %+v\n", svc)
+		}
 		if svc.TLS {
 			// Check with certificate validation first
 			ok, insecure := VerifyEndpointWithCertCheck(svc.Endpoint)
+			if Debug {
+				fmt.Printf("[DEBUG] TLS verify result: ok=%v, insecure=%v\n", ok, insecure)
+			}
 			if ok {
 				return svc.Endpoint, svc.Host, svc.TLS, insecure
 			}
 		} else {
 			// HTTP endpoint - just verify it works
-			if VerifyEndpoint(svc.Endpoint) {
+			ok := VerifyEndpoint(svc.Endpoint)
+			if Debug {
+				fmt.Printf("[DEBUG] HTTP verify result: ok=%v\n", ok)
+			}
+			if ok {
 				return svc.Endpoint, svc.Host, svc.TLS, false
 			}
 		}
 	}
 
-	// Don't return unverified endpoints - they might not be Ollama servers
+	// Fall back to localhost if no network services found/verified
+	if Debug {
+		fmt.Println("[DEBUG] No network services verified, checking localhost")
+	}
+	if CheckLocalOllama() {
+		return "http://localhost:11434/v1", "localhost", false, false
+	}
+
+	// Nothing found
 	return "", "", false, false
 }
 

@@ -36,6 +36,7 @@ var (
 	autoMode     bool
 	insecure     bool
 	checkUpdate  bool
+	debugMode    bool
 )
 
 func init() {
@@ -59,6 +60,7 @@ func init() {
 	flag.BoolVar(&autoMode, "auto", false, "Auto-execute mode (skip confirmations)")
 	flag.BoolVar(&insecure, "insecure", false, "Skip TLS certificate verification")
 	flag.BoolVar(&checkUpdate, "update", false, "Check for updates and install if available")
+	flag.BoolVar(&debugMode, "debug", false, "Enable debug logging for discovery")
 }
 
 func main() {
@@ -111,6 +113,11 @@ func main() {
 	}
 	if temperature > 0 {
 		cfg.Temperature = temperature
+	}
+
+	// Set debug mode for discovery
+	if debugMode {
+		discovery.Debug = true
 	}
 
 	// Auto-discover Ollama if no config was loaded and endpoint wasn't overridden
