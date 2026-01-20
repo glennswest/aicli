@@ -248,6 +248,36 @@ type ChatRequest struct {
 	Stream      bool          `json:"stream"`
 }
 
+// OllamaChatRequest is for the native /api/chat endpoint (supports images)
+type OllamaChatRequest struct {
+	Model    string    `json:"model"`
+	Messages []Message `json:"messages"`
+	Stream   bool      `json:"stream"`
+}
+
+// OllamaChatResponse is the response from native /api/chat endpoint
+type OllamaChatResponse struct {
+	Model     string `json:"model"`
+	CreatedAt string `json:"created_at"`
+	Message   struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	} `json:"message"`
+	Done         bool   `json:"done"`
+	DoneReason   string `json:"done_reason,omitempty"`
+	TotalDuration int64 `json:"total_duration,omitempty"`
+}
+
+// hasImages checks if any message in history contains images
+func (c *Client) hasImages() bool {
+	for _, msg := range c.history {
+		if len(msg.Images) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 type ChatResponse struct {
 	ID      string `json:"id"`
 	Object  string `json:"object"`
@@ -671,8 +701,143 @@ func (c *Client) ContinueWithToolResultsContext(ctx context.Context, stream bool
 	return c.sendRequestWithContext(ctx, stream, onToken)
 }
 
+// sendOllamaRequestWithImages sends a request using Ollama's native /api/chat endpoint
+// which properly supports the images field for vision models
+func (c *Client) sendOllamaRequestWithImages(ctx context.Context, stream bool, onToken func(string)) (*ChatResult, error) {
+	req := OllamaChatRequest{
+		Model:    c.cfg.Model,
+		Messages: c.history,
+		Stream:   stream,
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	c.logDebug("ollama-request", body)
+
+	// Use native Ollama API endpoint instead of OpenAI-compatible
+	baseEndpoint := strings.TrimSuffix(c.cfg.APIEndpoint, "/v1")
+	baseEndpoint = strings.TrimSuffix(baseEndpoint, "/")
+	endpoint := baseEndpoint + "/api/chat"
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		if ctx.Err() == context.Canceled {
+			return &ChatResult{FinishReason: "interrupted"}, nil
+		}
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		c.logDebug("ollama-error", bodyBytes)
+		return nil, fmt.Errorf("Ollama API error %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var result *ChatResult
+
+	if stream {
+		// Handle streaming response from native Ollama API
+		result, err = c.handleOllamaStreamResponse(ctx, resp.Body, onToken)
+		if err != nil && ctx.Err() != context.Canceled {
+			return nil, err
+		}
+	} else {
+		var ollamaResp OllamaChatResponse
+		respBody, _ := io.ReadAll(resp.Body)
+		c.logDebug("ollama-response", respBody)
+		if err := json.Unmarshal(respBody, &ollamaResp); err != nil {
+			return nil, fmt.Errorf("failed to decode response: %w", err)
+		}
+		result = &ChatResult{
+			Content:      ollamaResp.Message.Content,
+			FinishReason: ollamaResp.DoneReason,
+		}
+	}
+
+	// Add assistant message to history
+	msg := Message{
+		Role:    "assistant",
+		Content: result.Content,
+	}
+	c.history = append(c.history, msg)
+
+	return result, nil
+}
+
+// handleOllamaStreamResponse handles streaming responses from native Ollama API
+func (c *Client) handleOllamaStreamResponse(ctx context.Context, body io.ReadCloser, onToken func(string)) (*ChatResult, error) {
+	done := make(chan struct{})
+	defer close(done)
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			body.Close()
+		case <-done:
+		}
+	}()
+
+	scanner := bufio.NewScanner(body)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
+	result := &ChatResult{}
+	var contentBuilder strings.Builder
+
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			result.Content = contentBuilder.String()
+			result.FinishReason = "interrupted"
+			return result, nil
+		default:
+		}
+
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+
+		var chunk OllamaChatResponse
+		if err := json.Unmarshal([]byte(line), &chunk); err != nil {
+			continue
+		}
+
+		if chunk.Message.Content != "" {
+			contentBuilder.WriteString(chunk.Message.Content)
+			if onToken != nil {
+				onToken(chunk.Message.Content)
+			}
+		}
+
+		if chunk.Done {
+			result.FinishReason = chunk.DoneReason
+			break
+		}
+	}
+
+	result.Content = contentBuilder.String()
+	return result, scanner.Err()
+}
+
 func (c *Client) sendRequestWithContext(ctx context.Context, stream bool, onToken func(string)) (*ChatResult, error) {
 	c.requestNum++
+
+	// If there are images in the messages, use the native Ollama API
+	if c.hasImages() {
+		return c.sendOllamaRequestWithImages(ctx, stream, onToken)
+	}
 
 	req := ChatRequest{
 		Model:       c.cfg.Model,
