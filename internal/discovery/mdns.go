@@ -156,11 +156,12 @@ func DiscoverOllamaDnsSd(timeout time.Duration) ([]OllamaService, error) {
 		if strings.HasPrefix(line, "Browsing") || strings.HasPrefix(line, "DATE:") || strings.HasPrefix(line, "Timestamp") || line == "" {
 			continue
 		}
-		// Parse: "12:34:56.789  Add  2 4 local.  _ollama._tcp.  ServiceName"
+		// Parse: "14:29:58.104  Add  3  14 local.  _ollama._tcp.  ServiceName"
+		// Fields: [0]=timestamp [1]=A/R [2]=flags [3]=if [4]=domain [5]=type [6+]=name
 		fields := strings.Fields(line)
-		if len(fields) >= 6 && fields[1] == "Add" {
-			// Service name is the last field (may contain spaces, so join remaining)
-			name := strings.Join(fields[5:], " ")
+		if len(fields) >= 7 && fields[1] == "Add" {
+			// Service name is at index 6+ (may contain spaces, so join remaining)
+			name := strings.Join(fields[6:], " ")
 			serviceNames = append(serviceNames, name)
 		}
 	}
