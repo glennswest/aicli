@@ -1,5 +1,5 @@
 Name:           aicli
-Version:        0.5.5
+Version:        0.6.0
 Release:        1%{?dist}
 Summary:        Command-line AI coding assistant
 

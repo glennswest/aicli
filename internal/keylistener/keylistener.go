@@ -3,6 +3,7 @@ package keylistener
 import (
 	"os"
 	"sync"
+	"time"
 
 	"golang.org/x/term"
 )
@@ -21,6 +22,7 @@ type KeyEvent struct {
 
 type Listener struct {
 	stopCh   chan struct{}
+	doneCh   chan struct{} // signals readLoop has exited
 	eventCh  chan KeyEvent
 	inputBuf []rune
 	bufMu    sync.Mutex
@@ -46,6 +48,23 @@ func (l *Listener) Start() error {
 		return nil
 	}
 
+	// Wait for any previous readLoop to finish (with timeout)
+	if l.doneCh != nil {
+		select {
+		case <-l.doneCh:
+			// Previous goroutine finished
+		default:
+			// Previous goroutine still running - wait briefly
+			l.mu.Unlock()
+			select {
+			case <-l.doneCh:
+			case <-time.After(100 * time.Millisecond):
+				// Timeout - proceed anyway but may have zombie goroutine
+			}
+			l.mu.Lock()
+		}
+	}
+
 	// Put terminal in raw mode
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 	if err != nil {
@@ -54,6 +73,7 @@ func (l *Listener) Start() error {
 	l.oldState = oldState
 	l.active = true
 	l.stopCh = make(chan struct{})
+	l.doneCh = make(chan struct{})
 	l.eventCh = make(chan KeyEvent, 10)
 
 	go l.readLoop()
@@ -78,6 +98,13 @@ func (l *Listener) Stop() {
 }
 
 func (l *Listener) readLoop() {
+	defer func() {
+		// Signal that readLoop has exited
+		if l.doneCh != nil {
+			close(l.doneCh)
+		}
+	}()
+
 	buf := make([]byte, 1)
 	for {
 		select {

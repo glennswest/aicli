@@ -129,6 +129,181 @@ func DiscoverOllama(timeout time.Duration) ([]OllamaService, error) {
 	return services, nil
 }
 
+// DiscoverOlamaDnsSd uses macOS dns-sd as fallback for mDNS discovery
+// This is the native macOS Bonjour command-line tool
+func DiscoverOllamaDnsSd(timeout time.Duration) ([]OllamaService, error) {
+	// Check if dns-sd is available (macOS only)
+	_, err := exec.LookPath("dns-sd")
+	if err != nil {
+		return nil, fmt.Errorf("dns-sd not found (not macOS?)")
+	}
+
+	// dns-sd -B _ollama._tcp local - browse for services
+	// dns-sd runs continuously, so we need to kill it after timeout
+	browseCmd := exec.Command("dns-sd", "-B", "_ollama._tcp", "local")
+	browseOut, err := runWithTimeout(browseCmd, timeout)
+	if err != nil && len(browseOut) == 0 {
+		return nil, fmt.Errorf("dns-sd browse failed: %w", err)
+	}
+
+	// Parse browse output to get service names
+	// Format: Timestamp  A/R Flags if Domain  Service Type  Instance Name
+	var serviceNames []string
+	scanner := bufio.NewScanner(strings.NewReader(string(browseOut)))
+	for scanner.Scan() {
+		line := scanner.Text()
+		// Skip header lines
+		if strings.HasPrefix(line, "Browsing") || strings.HasPrefix(line, "DATE:") || strings.HasPrefix(line, "Timestamp") || line == "" {
+			continue
+		}
+		// Parse: "12:34:56.789  Add  2 4 local.  _ollama._tcp.  ServiceName"
+		fields := strings.Fields(line)
+		if len(fields) >= 6 && fields[1] == "Add" {
+			// Service name is the last field (may contain spaces, so join remaining)
+			name := strings.Join(fields[5:], " ")
+			serviceNames = append(serviceNames, name)
+		}
+	}
+
+	if len(serviceNames) == 0 {
+		return nil, fmt.Errorf("no services found")
+	}
+
+	// Resolve each service with dns-sd -L
+	var services []OllamaService
+	for _, name := range serviceNames {
+		resolveCmd := exec.Command("dns-sd", "-L", name, "_ollama._tcp", "local")
+		resolveOut, err := runWithTimeout(resolveCmd, 2*time.Second)
+		if err != nil || len(resolveOut) == 0 {
+			continue
+		}
+
+		// Parse resolve output to get hostname and port
+		// Format: ServiceName._ollama._tcp.local. can be reached at hostname.local.:11434 (interface 4)
+		//         txtvers=1 proto=https
+		var host string
+		var port int
+		var useTLS bool
+		resolveScanner := bufio.NewScanner(strings.NewReader(string(resolveOut)))
+		for resolveScanner.Scan() {
+			line := resolveScanner.Text()
+			if strings.Contains(line, "can be reached at") {
+				// Extract "hostname.local.:11434"
+				parts := strings.Split(line, "can be reached at ")
+				if len(parts) >= 2 {
+					addrPart := strings.Fields(parts[1])[0] // "hostname.local.:11434"
+					lastColon := strings.LastIndex(addrPart, ":")
+					if lastColon > 0 {
+						host = addrPart[:lastColon]
+						port, _ = strconv.Atoi(addrPart[lastColon+1:])
+					}
+				}
+			}
+			if strings.Contains(line, "proto=https") {
+				useTLS = true
+			}
+		}
+
+		if host == "" || port == 0 {
+			continue
+		}
+
+		// Resolve hostname to IP using dns-sd -G
+		ip := resolveHostToIP(host, 2*time.Second)
+		if ip == "" {
+			// Try without .local suffix
+			host = strings.TrimSuffix(host, ".local.")
+			host = strings.TrimSuffix(host, ".")
+			ip = resolveHostToIP(host+".local", 2*time.Second)
+		}
+		if ip == "" {
+			continue
+		}
+
+		proto := "http"
+		if useTLS {
+			proto = "https"
+		}
+
+		svc := OllamaService{
+			Name:     name,
+			Host:     host,
+			Port:     port,
+			IP:       ip,
+			TLS:      useTLS,
+			Endpoint: fmt.Sprintf("%s://%s:%d/v1", proto, ip, port),
+		}
+		services = append(services, svc)
+	}
+
+	// Sort services: HTTPS first, then by name
+	sort.Slice(services, func(i, j int) bool {
+		if services[i].TLS != services[j].TLS {
+			return services[i].TLS
+		}
+		return services[i].Name < services[j].Name
+	})
+
+	return services, nil
+}
+
+// runWithTimeout runs a command and kills it after timeout, returning output
+func runWithTimeout(cmd *exec.Cmd, timeout time.Duration) ([]byte, error) {
+	var output strings.Builder
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+
+	done := make(chan struct{})
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			output.WriteString(scanner.Text() + "\n")
+		}
+		close(done)
+	}()
+
+	select {
+	case <-time.After(timeout):
+		cmd.Process.Kill()
+		<-done
+	case <-done:
+	}
+
+	cmd.Wait()
+	return []byte(output.String()), nil
+}
+
+// resolveHostToIP uses dns-sd -G to resolve a hostname to an IP
+func resolveHostToIP(host string, timeout time.Duration) string {
+	cmd := exec.Command("dns-sd", "-G", "v4", host)
+	out, err := runWithTimeout(cmd, timeout)
+	if err != nil || len(out) == 0 {
+		return ""
+	}
+
+	// Parse: "Timestamp  A/R Flags if Hostname  Address  TTL"
+	scanner := bufio.NewScanner(strings.NewReader(string(out)))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "DATE:") || strings.HasPrefix(line, "Timestamp") || line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		// Look for Add line with IP address
+		if len(fields) >= 6 && fields[1] == "Add" {
+			return fields[5] // IP address
+		}
+	}
+	return ""
+}
+
 // DiscoverOllamaAvahi uses avahi-browse as fallback for cross-subnet mDNS
 // This works better than the Go mDNS library in complex network setups
 func DiscoverOllamaAvahi(timeout time.Duration) ([]OllamaService, error) {
@@ -279,7 +454,7 @@ func VerifyEndpointWithCertCheck(endpoint string) (bool, bool) {
 
 // AutoDiscover attempts to find an Ollama instance:
 // 1. Check localhost first
-// 2. If not found, use mDNS discovery (Go library first, then avahi fallback)
+// 2. If not found, use mDNS discovery (Go library first, then platform-specific fallback)
 // Returns the endpoint URL, host, whether TLS is used, and whether insecure mode is needed
 func AutoDiscover() (endpoint string, host string, useTLS bool, needsInsecure bool) {
 	// First check localhost
@@ -290,12 +465,20 @@ func AutoDiscover() (endpoint string, host string, useTLS bool, needsInsecure bo
 	// Try Go mDNS library first
 	services, err := DiscoverOllama(3 * time.Second)
 
-	// If Go mDNS fails or finds nothing, try avahi-browse as fallback
-	// avahi works better for cross-subnet mDNS discovery
+	// If Go mDNS fails or finds nothing, try platform-specific fallbacks
 	if err != nil || len(services) == 0 {
+		// Try avahi-browse (Linux)
 		avahiServices, avahiErr := DiscoverOllamaAvahi(5 * time.Second)
 		if avahiErr == nil && len(avahiServices) > 0 {
 			services = avahiServices
+		}
+	}
+
+	// If still nothing, try dns-sd (macOS)
+	if len(services) == 0 {
+		dnssdServices, dnssdErr := DiscoverOllamaDnsSd(5 * time.Second)
+		if dnssdErr == nil && len(dnssdServices) > 0 {
+			services = dnssdServices
 		}
 	}
 

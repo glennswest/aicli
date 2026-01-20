@@ -879,6 +879,7 @@ func (c *Chat) sendMessage(msg string) {
 
 	// Clear the "Thinking..." status
 	fmt.Print("\r\033[K")
+	os.Stdout.Sync()
 
 	if result == nil {
 		fmt.Printf("\033[31mError: failed to get response\033[0m\n")
@@ -905,8 +906,13 @@ func (c *Chat) sendMessage(msg string) {
 	if result.Content != "" {
 		fmt.Print(result.Content)
 		c.recorder.RecordAssistant(result.Content)
+		fmt.Println()
+	} else if len(result.ToolCalls) > 0 {
+		// AI is calling tools without explanation - show brief status
+		fmt.Printf("\033[90m[Executing %d tool(s)...]\033[0m\n", len(result.ToolCalls))
+	} else {
+		fmt.Println()
 	}
-	fmt.Println()
 
 	// Auto-continue: if model narrated an action but didn't call a tool, nudge it
 	if len(result.ToolCalls) == 0 && shouldAutoContinue(result.Content) {
