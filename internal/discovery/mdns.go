@@ -251,15 +251,16 @@ func DiscoverOllamaDnsSd(timeout time.Duration) ([]OllamaService, error) {
 			fmt.Printf("[DEBUG] IP resolution for %s: %s\n", host, ip)
 		}
 
-		// Use hostname directly if IP resolution fails (macOS can resolve .local natively)
-		endpointHost := ip
-		if ip == "" {
-			endpointHost = host
-		}
-
+		// For TLS, prefer hostname (certificates are usually issued for hostnames, not IPs)
+		// For HTTP, prefer IP if available, otherwise use hostname
 		proto := "http"
+		endpointHost := host // default to hostname
 		if useTLS {
 			proto = "https"
+			// Always use hostname for TLS (needed for certificate validation and SNI)
+		} else if ip != "" {
+			// For HTTP, use IP if available
+			endpointHost = ip
 		}
 
 		svc := OllamaService{
