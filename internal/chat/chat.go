@@ -964,7 +964,17 @@ func (c *Chat) sendMessage(msg string) {
 			c.recorder.RecordToolCall(tc.Function.Name, tc.Function.Arguments)
 			toolResult := c.executeTool(tc)
 			c.recorder.RecordToolResult(tc.Function.Name, toolResult)
-			c.client.AddToolResult(tc.ID, toolResult)
+
+			// Check if tool result contains an image (for vision models)
+			if strings.HasPrefix(toolResult, executor.ImagePrefix) {
+				base64Image := strings.TrimPrefix(toolResult, executor.ImagePrefix)
+				// Extract filename from the tool result for context
+				var args tools.ReadFileArgs
+				json.Unmarshal([]byte(tc.Function.Arguments), &args)
+				c.client.AddToolResultWithImage(tc.ID, fmt.Sprintf("Image loaded: %s", args.Path), base64Image)
+			} else {
+				c.client.AddToolResult(tc.ID, toolResult)
+			}
 
 			// Stop executing remaining tool calls if a command failed
 			// This forces the LLM to address the error before continuing

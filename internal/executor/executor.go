@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"os"
@@ -182,17 +183,33 @@ func (e *Executor) WriteFile(path, content string) error {
 	return os.WriteFile(fullPath, []byte(content), 0644)
 }
 
+// ImagePrefix is used to identify base64-encoded image content in read results
+const ImagePrefix = "IMAGE:BASE64:"
+
 func (e *Executor) ReadFile(path string) (string, error) {
 	fullPath := path
 	if !filepath.IsAbs(path) {
 		fullPath = filepath.Join(e.workDir, path)
 	}
 
-	// Check for binary/image files that can't be read as text
 	ext := strings.ToLower(filepath.Ext(fullPath))
+
+	// Image files - return base64 encoded for vision models
+	imageExts := map[string]bool{
+		".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true,
+	}
+	if imageExts[ext] {
+		content, err := os.ReadFile(fullPath)
+		if err != nil {
+			return "", err
+		}
+		// Return with special prefix so chat handler knows it's an image
+		return ImagePrefix + base64.StdEncoding.EncodeToString(content), nil
+	}
+
+	// Other binary files - reject
 	binaryExts := map[string]bool{
-		".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".bmp": true,
-		".ico": true, ".webp": true, ".tiff": true, ".svg": true,
+		".bmp": true, ".ico": true, ".tiff": true, ".svg": true,
 		".pdf": true, ".doc": true, ".docx": true, ".xls": true, ".xlsx": true,
 		".zip": true, ".tar": true, ".gz": true, ".rar": true, ".7z": true,
 		".exe": true, ".dll": true, ".so": true, ".dylib": true,
@@ -201,7 +218,7 @@ func (e *Executor) ReadFile(path string) (string, error) {
 		".o": true, ".a": true, ".pyc": true, ".class": true,
 	}
 	if binaryExts[ext] {
-		return "", fmt.Errorf("cannot read binary file %s - this file type (%s) is not supported for text reading", filepath.Base(fullPath), ext)
+		return "", fmt.Errorf("cannot read binary file %s - this file type (%s) is not supported", filepath.Base(fullPath), ext)
 	}
 
 	content, err := os.ReadFile(fullPath)

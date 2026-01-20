@@ -236,6 +236,7 @@ type Message struct {
 	Content    string           `json:"content"` // No omitempty - required for tool role messages
 	ToolCalls  []tools.ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string           `json:"tool_call_id,omitempty"`
+	Images     []string         `json:"images,omitempty"` // Base64-encoded images for vision models
 }
 
 type ChatRequest struct {
@@ -615,6 +616,32 @@ func (c *Client) AddToolResult(toolCallID, result string) {
 		Role:       "tool",
 		Content:    result,
 		ToolCallID: toolCallID,
+	})
+}
+
+// AddToolResultWithImage adds a tool result that includes an image for vision models
+func (c *Client) AddToolResultWithImage(toolCallID, result, base64Image string) {
+	// For vision models, we need to add the image to a user message
+	// since Ollama expects images in the "images" array
+	if !c.useTools {
+		c.history = append(c.history, Message{
+			Role:    "user",
+			Content: fmt.Sprintf("[Tool Result - Image]:\n%s", result),
+			Images:  []string{base64Image},
+		})
+		return
+	}
+	// Add tool result first
+	c.history = append(c.history, Message{
+		Role:       "tool",
+		Content:    result,
+		ToolCallID: toolCallID,
+	})
+	// Then add a user message with the image for vision model processing
+	c.history = append(c.history, Message{
+		Role:    "user",
+		Content: "Here is the image I just read. Please analyze it.",
+		Images:  []string{base64Image},
 	})
 }
 
