@@ -209,16 +209,21 @@ func DiscoverOllamaDnsSd(timeout time.Duration) ([]OllamaService, error) {
 			continue
 		}
 
+		// Clean up hostname (remove trailing dot)
+		host = strings.TrimSuffix(host, ".")
+
 		// Resolve hostname to IP using dns-sd -G
 		ip := resolveHostToIP(host, 2*time.Second)
 		if ip == "" {
 			// Try without .local suffix
-			host = strings.TrimSuffix(host, ".local.")
-			host = strings.TrimSuffix(host, ".")
-			ip = resolveHostToIP(host+".local", 2*time.Second)
+			cleanHost := strings.TrimSuffix(host, ".local")
+			ip = resolveHostToIP(cleanHost+".local", 2*time.Second)
 		}
+
+		// Use hostname directly if IP resolution fails (macOS can resolve .local natively)
+		endpointHost := ip
 		if ip == "" {
-			continue
+			endpointHost = host
 		}
 
 		proto := "http"
@@ -232,7 +237,7 @@ func DiscoverOllamaDnsSd(timeout time.Duration) ([]OllamaService, error) {
 			Port:     port,
 			IP:       ip,
 			TLS:      useTLS,
-			Endpoint: fmt.Sprintf("%s://%s:%d/v1", proto, ip, port),
+			Endpoint: fmt.Sprintf("%s://%s:%d/v1", proto, endpointHost, port),
 		}
 		services = append(services, svc)
 	}
