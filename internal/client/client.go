@@ -454,6 +454,9 @@ type RunningModelInfo struct {
 
 // ListRunningModels returns the list of currently running/loaded models
 func (c *Client) ListRunningModels() ([]string, error) {
+	if !c.cfg.IsOllamaEndpoint() {
+		return nil, fmt.Errorf("not an Ollama endpoint")
+	}
 	// Convert OpenAI-compatible endpoint to Ollama native endpoint
 	// e.g., http://localhost:11434/v1 -> http://localhost:11434/api/ps
 	baseEndpoint := strings.TrimSuffix(c.cfg.APIEndpoint, "/")
@@ -509,6 +512,9 @@ func (c *Client) IsModelRunning(modelName string) bool {
 // LoadModel triggers a model to load and waits for it to be ready
 // Returns an error if loading fails or times out
 func (c *Client) LoadModel(modelName string, keepAlive string) error {
+	if !c.cfg.IsOllamaEndpoint() {
+		return fmt.Errorf("not an Ollama endpoint")
+	}
 	// Use Ollama's generate endpoint with empty prompt to trigger load
 	baseEndpoint := strings.TrimSuffix(c.cfg.APIEndpoint, "/")
 	baseEndpoint = strings.TrimSuffix(baseEndpoint, "/v1")
@@ -834,8 +840,8 @@ func (c *Client) handleOllamaStreamResponse(ctx context.Context, body io.ReadClo
 func (c *Client) sendRequestWithContext(ctx context.Context, stream bool, onToken func(string)) (*ChatResult, error) {
 	c.requestNum++
 
-	// If there are images in the messages, use the native Ollama API
-	if c.hasImages() {
+	// If there are images in the messages, use the native Ollama API (Ollama only)
+	if c.hasImages() && c.cfg.IsOllamaEndpoint() {
 		return c.sendOllamaRequestWithImages(ctx, stream, onToken)
 	}
 
