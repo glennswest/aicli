@@ -218,7 +218,9 @@ func main() {
 
 	// Single prompt mode
 	if prompt != "" {
-		ensureModelLoaded(cfg)
+		if cfg.PreloadModel {
+			ensureModelLoaded(cfg)
+		}
 		runSinglePrompt(cfg, prompt)
 		return
 	}
@@ -226,13 +228,17 @@ func main() {
 	// Check for piped input
 	stat, _ := os.Stdin.Stat()
 	if (stat.Mode() & os.ModeCharDevice) == 0 {
-		ensureModelLoaded(cfg)
+		if cfg.PreloadModel {
+			ensureModelLoaded(cfg)
+		}
 		runPipedInput(cfg)
 		return
 	}
 
 	// Interactive chat mode
-	ensureModelLoaded(cfg)
+	if cfg.PreloadModel {
+		ensureModelLoaded(cfg)
+	}
 	checkUpdateOnStartup()
 	runInteractive(cfg)
 }

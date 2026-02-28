@@ -26,6 +26,10 @@ type Config struct {
 	// Tools: write_file, run_command, git_commit, git_add, screenshot, set_version
 	ToolPermissions map[string]string `json:"tool_permissions,omitempty"`
 
+	// PreloadModel: if true, check if model is loaded and preload via Ollama API
+	// Set to false for cloud APIs (xAI, OpenAI, etc.) that don't support /api/generate
+	PreloadModel bool `json:"preload_model,omitempty"`
+
 	// UserInterrupts: if true, inject user messages to nudge model on errors
 	// Smarter models (qwen2.5:72b) don't need this; weaker models might
 	UserInterrupts bool `json:"user_interrupts,omitempty"`
@@ -62,11 +66,12 @@ func (c *Config) SetToolPermission(tool, permission string) {
 
 func DefaultConfig() *Config {
 	return &Config{
-		APIEndpoint: "http://localhost:11434/v1",
-		APIKey:      "",
-		Model:       "default",
-		MaxTokens:   4096,
-		Temperature: 0.3,
+		APIEndpoint:  "http://localhost:11434/v1",
+		APIKey:       "",
+		Model:        "default",
+		MaxTokens:    4096,
+		Temperature:  0.3,
+		PreloadModel: true,
 		SystemPrompt: `You are an expert coding assistant. You MUST use tools to perform actions - never just show code in markdown blocks.
 
 PLANNING PHASE - For any non-trivial task:

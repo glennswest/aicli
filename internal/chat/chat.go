@@ -80,16 +80,17 @@ func NewNonInteractive(cfg *config.Config, autoExec bool) (*Chat, error) {
 	c := client.NewWithDebug(cfg, workDir)
 
 	return &Chat{
-		client:    c,
-		cfg:       cfg,
-		rl:        nil, // No readline for non-interactive mode
-		exec:      exec,
-		web:       web.NewSearch(),
-		recorder:  session.NewRecorder(workDir),
-		todoFile:  session.NewTodoFile(workDir),
-		changelog: session.NewChangelogFile(workDir),
-		history:   session.NewHistoryFile(workDir),
-		autoExec:  autoExec,
+		client:      c,
+		cfg:         cfg,
+		rl:          nil, // No readline for non-interactive mode
+		exec:        exec,
+		web:         web.NewSearch(),
+		recorder:    session.NewRecorder(workDir),
+		todoFile:    session.NewTodoFile(workDir),
+		changelog:   session.NewChangelogFile(workDir),
+		history:     session.NewHistoryFile(workDir),
+		keyListener: keylistener.New(),
+		autoExec:    autoExec,
 	}, nil
 }
 

@@ -1,0 +1,16 @@
+{
+  "api_endpoint": "https://api.x.ai/v1",
+  "api_key": "xai-YOUR_API_KEY_HERE",
+  "model": "grok-4-fast-non-reasoning",
+  "max_tokens": 8192,
+  "temperature": 0.7,
+  "system_prompt": "You are Grok, a helpful and maximally truthful AI built by xAI, not based on models from any other companies.",
+  "tool_permissions": {
+    "run_command": "always",
+    "write_file": "always",
+    "git_commit": "always",
+    "git_add": "always"
+  },
+  "preload_model": false,
+  "user_interrupts": false
+}
