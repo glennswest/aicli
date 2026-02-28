@@ -37,6 +37,14 @@ type Config struct {
 	// Smarter models (qwen2.5:72b) don't need this; weaker models might
 	UserInterrupts bool `json:"user_interrupts,omitempty"`
 
+	// PlanModel: model to use for plan generation (best reasoning model)
+	// Defaults to "grok-4" for xAI, or the main model for other providers
+	PlanModel string `json:"plan_model,omitempty"`
+
+	// ExecModel: model to use for plan step execution (cheaper/faster model)
+	// Defaults to the main configured model
+	ExecModel string `json:"exec_model,omitempty"`
+
 	// Internal: tracks which config file was loaded
 	loadedFrom string
 }
@@ -65,6 +73,28 @@ func (c *Config) SetToolPermission(tool, permission string) {
 		c.ToolPermissions = make(map[string]string)
 	}
 	c.ToolPermissions[tool] = permission
+}
+
+// GetPlanModel returns the model to use for plan generation
+// Falls back to grok-4 for xAI, or the main model for other providers
+func (c *Config) GetPlanModel() string {
+	if c.PlanModel != "" {
+		return c.PlanModel
+	}
+	// Auto-detect best planning model for known providers
+	if strings.Contains(c.APIEndpoint, "api.x.ai") {
+		return "grok-4"
+	}
+	return c.Model
+}
+
+// GetExecModel returns the model to use for plan step execution
+// Falls back to the main configured model
+func (c *Config) GetExecModel() string {
+	if c.ExecModel != "" {
+		return c.ExecModel
+	}
+	return c.Model
 }
 
 // IsOllamaEndpoint returns true if the API endpoint looks like an Ollama instance

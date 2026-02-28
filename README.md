@@ -15,6 +15,13 @@ A command-line AI coding assistant with tool execution capabilities. Works with 
 - **Auto-continue** - Detects when the AI describes an action without executing it and prompts to continue
 - **Smart error handling** - Language-specific error detection with suggested fixes
 
+### Plan Mode
+- **AI-powered planning** - Uses the best reasoning model to analyze your project and create a step-by-step implementation plan
+- **Model optimization** - Plans with a premium model (e.g. grok-4), executes with a faster/cheaper model (e.g. grok-4-fast-non-reasoning)
+- **Progress tracking** - Plan saved to `plan.md` with step status, model tier recommendations, and completion tracking
+- **Step-by-step execution** - Run one step at a time (`/plan next`) or all at once (`/plan run`)
+- **Retry support** - Retry failed steps with `/plan retry`
+
 ### Intelligent Automation
 - **Model auto-configuration** - Automatically detects and configures available models
 - **Model loading check** - Verifies model is loaded on startup, loads if needed (24h keep-alive)
@@ -159,6 +166,8 @@ This creates `~/.config/aicli/config.json` with defaults:
 | `system_prompt` | Custom system prompt for the AI | (built-in coding assistant prompt) |
 | `tool_permissions` | Per-tool permission settings | `{}` |
 | `user_interrupts` | Enable user interrupts for weaker models | `false` |
+| `plan_model` | Best model for plan generation (reasoning) | auto-detect |
+| `exec_model` | Cheaper model for plan step execution | same as `model` |
 
 ### Example Configurations
 
@@ -231,6 +240,7 @@ Process piped content through the AI.
 | `--sessions` | List recorded sessions |
 | `--playback` | Replay a session file |
 | `--auto` | Auto-execute mode (skip confirmations) |
+| `--plan "goal"` | Create an implementation plan for the given goal |
 | `--insecure` | Skip TLS certificate verification |
 | `--update` | Check for updates and install if available |
 
@@ -248,6 +258,12 @@ Process piped content through the AI.
 | `/git <cmd>` | Git operations (status, diff, log, add, commit) |
 | `/version`, `/v` | Show version |
 | `/auto` | Toggle auto-execute mode |
+| `/plan <goal>` | Create implementation plan with best model |
+| `/plan status` | Show current plan progress |
+| `/plan next` | Execute next plan step |
+| `/plan run` | Execute all remaining plan steps |
+| `/plan retry` | Retry last failed step |
+| `/plan reset` | Clear current plan |
 | `/search <query>` | Web search (DuckDuckGo) |
 | `/screenshot` | Capture screenshot |
 | `/sessions` | List sessions |
@@ -259,6 +275,51 @@ Process piped content through the AI.
 | `/todos` | View/manage persistent todos |
 | `/changelog` | View/add changelog entries |
 | `/history [n]` | View recent project history |
+
+## Plan Mode
+
+Plan mode uses a two-model strategy to optimize both quality and cost:
+
+1. **Planning phase** — The best reasoning model (e.g., `grok-4`) analyzes your project structure and creates a detailed implementation plan
+2. **Execution phase** — A faster/cheaper model (e.g., `grok-4-fast-non-reasoning`) implements each step
+
+### Creating a Plan
+
+```bash
+# From the CLI
+aicli --plan "add user authentication with JWT"
+
+# Or interactively
+/plan add user authentication with JWT
+```
+
+The planning model will:
+- Scan your project structure and key files
+- Analyze what needs to change
+- Break the goal into ordered, executable steps
+- Recommend a model tier for each step (premium/standard/economy)
+- Save the plan to `plan.md` and `.aicli/plan.json`
+
+### Executing a Plan
+
+```bash
+/plan next    # Execute one step at a time
+/plan run     # Execute all remaining steps
+/plan status  # Check progress
+/plan retry   # Retry a failed step
+/plan reset   # Start over
+```
+
+### Configuration
+
+```json
+{
+  "plan_model": "grok-4",
+  "exec_model": "grok-4-fast-non-reasoning"
+}
+```
+
+For xAI users, `plan_model` defaults to `grok-4` automatically. For other providers, it defaults to the configured `model`.
 
 ## AI Tools
 

@@ -37,6 +37,7 @@ var (
 	insecure     bool
 	checkUpdate  bool
 	debugMode    bool
+	planGoal     string
 )
 
 func init() {
@@ -61,6 +62,7 @@ func init() {
 	flag.BoolVar(&insecure, "insecure", false, "Skip TLS certificate verification")
 	flag.BoolVar(&checkUpdate, "update", false, "Check for updates and install if available")
 	flag.BoolVar(&debugMode, "debug", false, "Enable debug logging for discovery")
+	flag.StringVar(&planGoal, "plan", "", "Create an implementation plan for the given goal")
 }
 
 func main() {
@@ -219,6 +221,15 @@ func main() {
 		return
 	}
 
+	// Plan mode (non-interactive)
+	if planGoal != "" {
+		if cfg.ShouldPreloadModel() {
+			ensureModelLoaded(cfg)
+		}
+		runPlanMode(cfg, planGoal)
+		return
+	}
+
 	// Single prompt mode
 	if prompt != "" {
 		if cfg.ShouldPreloadModel() {
@@ -302,6 +313,20 @@ func runPipedInput(cfg *config.Config) {
 	fmt.Println()
 
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func runPlanMode(cfg *config.Config, goal string) {
+	c, err := chat.NewNonInteractive(cfg, autoMode)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Use the /plan new command internally
+	if err := c.RunPlan(goal); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}

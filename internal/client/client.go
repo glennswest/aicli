@@ -555,6 +555,26 @@ func (c *Client) LoadModel(modelName string, keepAlive string) error {
 	return nil
 }
 
+// WithModel creates a new client that uses a different model but shares the
+// same HTTP client and config (except model). History is reset.
+func (c *Client) WithModel(model string) *Client {
+	cfgCopy := *c.cfg
+	cfgCopy.Model = model
+	return &Client{
+		cfg:        &cfgCopy,
+		httpClient: c.httpClient,
+		history:    make([]Message, 0),
+		useTools:   modelSupportsNativeTools(model),
+		debugDir:   c.debugDir,
+		workDir:    c.workDir,
+	}
+}
+
+// GetConfig returns the client's config (for reading model name, etc.)
+func (c *Client) GetConfig() *config.Config {
+	return c.cfg
+}
+
 func (c *Client) SetUseTools(use bool) {
 	c.useTools = use
 }

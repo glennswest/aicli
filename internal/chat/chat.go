@@ -15,6 +15,7 @@ import (
 	"aicli/internal/config"
 	"aicli/internal/executor"
 	"aicli/internal/keylistener"
+	"aicli/internal/plan"
 	"aicli/internal/session"
 	"aicli/internal/tools"
 	"aicli/internal/web"
@@ -92,6 +93,12 @@ func NewNonInteractive(cfg *config.Config, autoExec bool) (*Chat, error) {
 		keyListener: keylistener.New(),
 		autoExec:    autoExec,
 	}, nil
+}
+
+// RunPlan creates a plan from a goal and optionally executes it (non-interactive)
+func (c *Chat) RunPlan(goal string) error {
+	c.createPlan(goal)
+	return nil
 }
 
 // RunSingle executes a single prompt with full tool support
@@ -180,7 +187,7 @@ func (c *Chat) Run() error {
 
 	v, _ := c.exec.GetVersion()
 	fmt.Printf("AI Coding Assistant - aicli v%s (project v%s)\n", config.AppVersion, v.String())
-	fmt.Println("Commands: /help, /clear, /file, /auto, /models, /model, /quit")
+	fmt.Println("Commands: /help, /clear, /file, /auto, /plan, /models, /model, /quit")
 	fmt.Printf("Working directory: %s\n", c.exec.WorkDir())
 	fmt.Printf("Session: %s\n\n", c.recorder.SessionPath())
 
@@ -508,6 +515,9 @@ func (c *Chat) handleCommand(cmd string) bool {
 
 	case "/history":
 		c.handleHistoryCommand(parts[1:])
+
+	case "/plan":
+		c.handlePlanCommand(parts[1:])
 
 	default:
 		fmt.Printf("Unknown command: %s\n", parts[0])
@@ -1457,6 +1467,12 @@ Commands:
   /todos           View/manage persistent todos
   /changelog       View/add changelog entries
   /history [n]     View recent project history
+  /plan <goal>     Create an implementation plan using best model
+  /plan status     Show current plan progress
+  /plan next       Execute next plan step with exec model
+  /plan run        Execute all remaining plan steps
+  /plan retry      Retry the last failed step
+  /plan reset      Clear the current plan
   /search <query>  Search the web
   /screenshot      Capture a screenshot
   /sessions        List recorded sessions
@@ -1496,15 +1512,18 @@ func (c *Chat) printConfig() {
 	v, _ := c.exec.GetVersion()
 	fmt.Printf(`
 Configuration:
-  Endpoint:    %s
-  Model:       %s
-  Max Tokens:  %d
-  Temperature: %.2f
-  Working Dir: %s
-  Version:     %s
-  Auto-exec:   %v
-  Session:     %s
-`, c.cfg.APIEndpoint, c.cfg.Model, c.cfg.MaxTokens, c.cfg.Temperature,
+  Endpoint:     %s
+  Model:        %s
+  Plan Model:   %s
+  Exec Model:   %s
+  Max Tokens:   %d
+  Temperature:  %.2f
+  Working Dir:  %s
+  Version:      %s
+  Auto-exec:    %v
+  Session:      %s
+`, c.cfg.APIEndpoint, c.cfg.Model, c.cfg.GetPlanModel(), c.cfg.GetExecModel(),
+		c.cfg.MaxTokens, c.cfg.Temperature,
 		c.exec.WorkDir(), v.String(), c.autoExec, c.recorder.SessionPath())
 }
 
@@ -1634,6 +1653,364 @@ func shouldAutoContinue(content string) bool {
 	}
 
 	return false
+}
+
+// handlePlanCommand dispatches /plan subcommands
+func (c *Chat) handlePlanCommand(args []string) {
+	if len(args) == 0 {
+		// No args: show status if plan exists, otherwise show usage
+		if plan.Exists(c.exec.WorkDir()) {
+			c.showPlanStatus()
+		} else {
+			c.printPlanHelp()
+		}
+		return
+	}
+
+	switch args[0] {
+	case "new":
+		if len(args) < 2 {
+			fmt.Println("Usage: /plan new <goal description>")
+			return
+		}
+		goal := strings.Join(args[1:], " ")
+		c.createPlan(goal)
+
+	case "status":
+		c.showPlanStatus()
+
+	case "next":
+		c.executePlanNext()
+
+	case "run":
+		c.executePlanAll()
+
+	case "reset":
+		if plan.Exists(c.exec.WorkDir()) {
+			plan.Remove(c.exec.WorkDir())
+			fmt.Println("Plan cleared.")
+		} else {
+			fmt.Println("No active plan.")
+		}
+
+	case "retry":
+		c.retryFailedStep()
+
+	default:
+		// Treat everything after /plan as the goal (shortcut for /plan new)
+		goal := strings.Join(args, " ")
+		c.createPlan(goal)
+	}
+}
+
+func (c *Chat) printPlanHelp() {
+	fmt.Println(`
+Plan Mode — Multi-step implementation with model optimization
+
+Usage:
+  /plan <goal>          Create a new plan (shortcut for /plan new)
+  /plan new <goal>      Analyze project and create implementation plan
+  /plan status          Show current plan progress
+  /plan next            Execute the next pending step
+  /plan run             Execute all remaining steps
+  /plan retry           Retry the last failed step
+  /plan reset           Clear the current plan
+
+Plan mode uses two models:
+  Planning model  — Best reasoning model for analysis and planning
+  Execution model — Faster/cheaper model for implementing each step
+
+Configure in config.json:
+  "plan_model": "grok-4"                     (default for xAI)
+  "exec_model": "grok-4-fast-non-reasoning"  (default: same as model)`)
+}
+
+// createPlan gathers project context and uses the planning model to generate a plan
+func (c *Chat) createPlan(goal string) {
+	planModel := c.cfg.GetPlanModel()
+	fmt.Printf("\033[36mPlan Mode: Analyzing project with %s...\033[0m\n", planModel)
+
+	// Gather project context
+	fileList := c.gatherFileList()
+	fileContents := c.gatherKeyFiles()
+
+	// Build the planning prompt
+	userPrompt := plan.BuildPlanningPrompt(goal, fileList, fileContents)
+
+	// Create a planning client with the best model
+	planClient := c.client.WithModel(planModel)
+
+	// Set the planning system prompt
+	planClient.ClearHistory()
+	planCfg := planClient.GetConfig()
+	origPrompt := planCfg.SystemPrompt
+	planCfg.SystemPrompt = plan.GetPlanningSystemPrompt()
+	planClient.AddSystemPrompt()
+	planCfg.SystemPrompt = origPrompt
+
+	// Send to planning model (non-streaming for reliable JSON)
+	fmt.Print("\033[90mGenerating plan...\033[0m")
+	os.Stdout.Sync()
+
+	result, err := planClient.Chat(userPrompt, false, nil)
+	fmt.Print("\r\033[K")
+
+	if err != nil {
+		fmt.Printf("\033[31mPlan generation failed: %v\033[0m\n", err)
+		return
+	}
+
+	// Parse the response
+	resp, err := plan.ParsePlanResponse(result.Content)
+	if err != nil {
+		fmt.Printf("\033[31mFailed to parse plan: %v\033[0m\n", err)
+		fmt.Printf("\033[90mRaw response:\n%s\033[0m\n", result.Content)
+		return
+	}
+
+	// Build the plan
+	p := plan.BuildFromResponse(goal, resp)
+
+	// Save it
+	if err := p.Save(c.exec.WorkDir()); err != nil {
+		fmt.Printf("\033[31mFailed to save plan: %v\033[0m\n", err)
+		return
+	}
+
+	// Display the plan
+	fmt.Printf("\n\033[32mPlan created with %d steps\033[0m\n\n", len(p.Steps))
+	c.displayPlan(p)
+
+	fmt.Printf("\n\033[36mUse /plan next to execute step by step, or /plan run to execute all.\033[0m\n")
+
+	c.recorder.RecordUser(fmt.Sprintf("[Plan created: %s (%d steps)]", goal, len(p.Steps)))
+	c.history.AddRequest(fmt.Sprintf("[Plan] %s", goal))
+}
+
+// executePlanNext executes the next pending step in the plan
+func (c *Chat) executePlanNext() {
+	p, err := plan.Load(c.exec.WorkDir())
+	if err != nil {
+		fmt.Println("No active plan. Use /plan <goal> to create one.")
+		return
+	}
+
+	step := p.NextPending()
+	if step == nil {
+		if p.IsComplete() {
+			fmt.Printf("\033[32mAll %d steps completed!\033[0m\n", len(p.Steps))
+		} else {
+			fmt.Println("No pending steps. Use /plan retry for failed steps or /plan reset to start over.")
+		}
+		return
+	}
+
+	c.executePlanStep(p, step)
+}
+
+// executePlanAll runs all remaining pending steps
+func (c *Chat) executePlanAll() {
+	p, err := plan.Load(c.exec.WorkDir())
+	if err != nil {
+		fmt.Println("No active plan. Use /plan <goal> to create one.")
+		return
+	}
+
+	for {
+		step := p.NextPending()
+		if step == nil {
+			break
+		}
+		c.executePlanStep(p, step)
+
+		// Reload plan in case step execution modified it
+		p, err = plan.Load(c.exec.WorkDir())
+		if err != nil {
+			fmt.Printf("\033[31mError reloading plan: %v\033[0m\n", err)
+			return
+		}
+	}
+
+	total, completed, failed, _, _ := p.Progress()
+	fmt.Printf("\n\033[36mPlan execution complete: %d/%d steps done", completed, total)
+	if failed > 0 {
+		fmt.Printf(", %d failed", failed)
+	}
+	fmt.Printf("\033[0m\n")
+}
+
+// retryFailedStep retries the first failed step
+func (c *Chat) retryFailedStep() {
+	p, err := plan.Load(c.exec.WorkDir())
+	if err != nil {
+		fmt.Println("No active plan.")
+		return
+	}
+
+	for i := range p.Steps {
+		if p.Steps[i].Status == "failed" {
+			// Reset to pending
+			p.Steps[i].Status = "pending"
+			p.Steps[i].Result = ""
+			p.Steps[i].StartedAt = nil
+			p.Steps[i].CompletedAt = nil
+			p.Save(c.exec.WorkDir())
+
+			c.executePlanStep(p, &p.Steps[i])
+			return
+		}
+	}
+
+	fmt.Println("No failed steps to retry.")
+}
+
+// executePlanStep runs a single plan step using the execution model
+func (c *Chat) executePlanStep(p *plan.Plan, step *plan.Step) {
+	execModel := c.cfg.GetExecModel()
+
+	fmt.Printf("\n\033[36m--- Step %d/%d: %s ---\033[0m\n", step.ID, len(p.Steps), step.Title)
+	fmt.Printf("\033[90mModel: %s | Tier: %s\033[0m\n", execModel, step.ModelTier)
+
+	// Mark in-progress and save
+	p.MarkInProgress(step.ID)
+	p.Save(c.exec.WorkDir())
+
+	// Save original model and switch to exec model
+	origModel := c.cfg.Model
+	c.cfg.Model = execModel
+	defer func() { c.cfg.Model = origModel }()
+
+	// Clear conversation history for a fresh step context
+	c.client.ClearHistory()
+
+	// Build the step execution prompt
+	prompt := plan.GetStepExecutionPrompt(step, p.Goal, p.Analysis)
+
+	// Record what we're doing
+	c.recorder.RecordUser(fmt.Sprintf("[Plan Step %d: %s]", step.ID, step.Title))
+
+	// Execute using normal sendMessage (reuses all tool infrastructure)
+	c.sendMessage(prompt)
+
+	// Reload plan (sendMessage might have modified files)
+	p, err := plan.Load(c.exec.WorkDir())
+	if err != nil {
+		// Plan was deleted or corrupted - just return
+		return
+	}
+
+	// Mark completed (we assume success unless the user says otherwise)
+	p.MarkCompleted(step.ID, "Executed")
+	p.Save(c.exec.WorkDir())
+
+	total, completed, _, _, pending := p.Progress()
+	fmt.Printf("\n\033[32mStep %d completed (%d/%d done, %d remaining)\033[0m\n", step.ID, completed, total, pending)
+}
+
+// showPlanStatus displays the current plan state
+func (c *Chat) showPlanStatus() {
+	p, err := plan.Load(c.exec.WorkDir())
+	if err != nil {
+		fmt.Println("No active plan. Use /plan <goal> to create one.")
+		return
+	}
+
+	c.displayPlan(p)
+}
+
+// displayPlan renders the plan to the terminal
+func (c *Chat) displayPlan(p *plan.Plan) {
+	fmt.Printf("\033[1mGoal:\033[0m %s\n", p.Goal)
+	fmt.Printf("\033[1mAnalysis:\033[0m %s\n\n", p.Analysis)
+
+	for _, step := range p.Steps {
+		var statusColor, statusIcon string
+		switch step.Status {
+		case "completed":
+			statusColor = "\033[32m"
+			statusIcon = "[x]"
+		case "in_progress":
+			statusColor = "\033[36m"
+			statusIcon = "[>]"
+		case "failed":
+			statusColor = "\033[31m"
+			statusIcon = "[!]"
+		default:
+			statusColor = "\033[33m"
+			statusIcon = "[ ]"
+		}
+
+		tierLabel := string(step.ModelTier)
+
+		fmt.Printf("  %s%s Step %d: %s\033[0m", statusColor, statusIcon, step.ID, step.Title)
+		fmt.Printf(" \033[90m(%s)\033[0m\n", tierLabel)
+
+		if step.Result != "" {
+			fmt.Printf("       \033[90m%s\033[0m\n", step.Result)
+		}
+	}
+
+	total, completed, failed, inProgress, pending := p.Progress()
+	fmt.Printf("\n  Progress: %d/%d", completed, total)
+	if failed > 0 {
+		fmt.Printf(" | \033[31m%d failed\033[0m", failed)
+	}
+	if inProgress > 0 {
+		fmt.Printf(" | \033[36m%d in progress\033[0m", inProgress)
+	}
+	if pending > 0 {
+		fmt.Printf(" | %d pending", pending)
+	}
+	fmt.Println()
+}
+
+// gatherFileList returns a tree-like listing of project files
+func (c *Chat) gatherFileList() string {
+	result := c.exec.ListFiles(".")
+	if result.Success() {
+		return result.Output
+	}
+	return "(unable to list files)"
+}
+
+// gatherKeyFiles reads important project files for context
+func (c *Chat) gatherKeyFiles() string {
+	var sb strings.Builder
+
+	// Key files to read for project context (in priority order)
+	keyFiles := []string{
+		"README.md", "CLAUDE.md",
+		"main.go", "main.py", "main.rs", "main.ts", "main.js",
+		"Cargo.toml", "package.json", "go.mod", "pyproject.toml", "Makefile",
+		"src/main.go", "src/main.rs", "src/lib.rs", "src/index.ts",
+		"cmd/main.go",
+	}
+
+	filesRead := 0
+	maxFiles := 5 // Don't overload context
+
+	for _, f := range keyFiles {
+		if filesRead >= maxFiles {
+			break
+		}
+
+		content, err := c.exec.ReadFile(f)
+		if err != nil {
+			continue
+		}
+
+		// Truncate very large files
+		if len(content) > 3000 {
+			content = content[:3000] + "\n... (truncated)"
+		}
+
+		ext := filepath.Ext(f)
+		lang := extToLang(ext)
+		sb.WriteString(fmt.Sprintf("### %s\n```%s\n%s\n```\n\n", f, lang, content))
+		filesRead++
+	}
+
+	return sb.String()
 }
 
 // isUnfixableByRerun returns true if the error indicates the command itself is wrong

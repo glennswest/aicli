@@ -1,5 +1,22 @@
 # Changelog
 
+## [v0.9.0] — 2026-02-28
+
+### Added
+- **Plan Mode** — Multi-step implementation planning with model optimization
+  - `/plan <goal>` creates a structured implementation plan using the best reasoning model
+  - `/plan next` executes steps one at a time with a cheaper/faster execution model
+  - `/plan run` executes all remaining steps automatically
+  - `/plan retry` retries failed steps
+  - `/plan status` shows plan progress
+  - `/plan reset` clears the current plan
+  - `--plan "goal"` CLI flag for non-interactive plan creation
+- `plan_model` config option — model for plan generation (defaults to `grok-4` for xAI)
+- `exec_model` config option — model for plan step execution (defaults to main `model`)
+- Plan saved as `plan.md` (human-readable) and `.aicli/plan.json` (machine-readable)
+- Per-step model tier recommendations (premium/standard/economy) from the planning AI
+- Project analysis with automatic key file detection for planning context
+
 ## [v0.8.0] — 2026-02-28
 
 ### Added

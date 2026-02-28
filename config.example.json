@@ -2,6 +2,8 @@
   "api_endpoint": "https://api.x.ai/v1",
   "api_key": "xai-YOUR_API_KEY_HERE",
   "model": "grok-4-fast-non-reasoning",
+  "plan_model": "grok-4",
+  "exec_model": "grok-4-fast-non-reasoning",
   "max_tokens": 8192,
   "temperature": 0.7,
   "system_prompt": "You are Grok, a helpful and maximally truthful AI built by xAI, not based on models from any other companies.",
