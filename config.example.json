@@ -2,7 +2,7 @@
   "api_endpoint": "https://api.x.ai/v1",
   "api_key": "xai-YOUR_API_KEY_HERE",
   "model": "grok-4-fast-non-reasoning",
-  "plan_model": "grok-4",
+  "plan_model": "grok-4-0709",
   "exec_model": "grok-4-fast-non-reasoning",
   "max_tokens": 8192,
   "temperature": 0.7,

@@ -95,9 +95,21 @@ func NewNonInteractive(cfg *config.Config, autoExec bool) (*Chat, error) {
 	}, nil
 }
 
-// RunPlan creates a plan from a goal and optionally executes it (non-interactive)
+// RunPlan creates a plan from a goal (non-interactive)
 func (c *Chat) RunPlan(goal string) error {
 	c.createPlan(goal)
+	return nil
+}
+
+// RunPlanNext executes the next pending plan step (non-interactive)
+func (c *Chat) RunPlanNext() error {
+	c.executePlanNext()
+	return nil
+}
+
+// RunPlanAll executes all remaining plan steps (non-interactive)
+func (c *Chat) RunPlanAll() error {
+	c.executePlanAll()
 	return nil
 }
 
@@ -1737,8 +1749,9 @@ func (c *Chat) createPlan(goal string) {
 	// Build the planning prompt
 	userPrompt := plan.BuildPlanningPrompt(goal, fileList, fileContents)
 
-	// Create a planning client with the best model
+	// Create a planning client with the best model, tools disabled (we want JSON output)
 	planClient := c.client.WithModel(planModel)
+	planClient.SetUseTools(false)
 
 	// Set the planning system prompt
 	planClient.ClearHistory()
@@ -1889,8 +1902,8 @@ func (c *Chat) executePlanStep(p *plan.Plan, step *plan.Step) {
 	// Record what we're doing
 	c.recorder.RecordUser(fmt.Sprintf("[Plan Step %d: %s]", step.ID, step.Title))
 
-	// Execute using normal sendMessage (reuses all tool infrastructure)
-	c.sendMessage(prompt)
+	// Execute with a turn limit to prevent infinite loops
+	c.sendMessageLimited(prompt, 15)
 
 	// Reload plan (sendMessage might have modified files)
 	p, err := plan.Load(c.exec.WorkDir())
@@ -1905,6 +1918,120 @@ func (c *Chat) executePlanStep(p *plan.Plan, step *plan.Step) {
 
 	total, completed, _, _, pending := p.Progress()
 	fmt.Printf("\n\033[32mStep %d completed (%d/%d done, %d remaining)\033[0m\n", step.ID, completed, total, pending)
+}
+
+// sendMessageLimited is like sendMessage but stops after maxTurns tool-call rounds
+// to prevent infinite loops during plan step execution
+func (c *Chat) sendMessageLimited(msg string, maxTurns int) {
+	tokenCount := 0
+	fmt.Print("\033[90mThinking... (Esc to interrupt)\033[0m")
+	os.Stdout.Sync()
+
+	result, interrupted := c.streamWithInterrupt(func(ctx context.Context) (*client.ChatResult, error) {
+		return c.client.ChatWithContext(ctx, msg, true, func(token string) {
+			tokenCount++
+			fmt.Printf("\r\033[K\033[90mThinking... [%d tokens] (Esc to interrupt)\033[0m", tokenCount)
+			os.Stdout.Sync()
+		})
+	})
+
+	fmt.Print("\r\033[K")
+	os.Stdout.Sync()
+
+	if result == nil {
+		fmt.Printf("\033[31mError: failed to get response\033[0m\n")
+		return
+	}
+
+	if interrupted {
+		if result.Content != "" {
+			fmt.Print(result.Content)
+			c.recorder.RecordAssistant(result.Content + " [interrupted]")
+		}
+		fmt.Println()
+		return
+	}
+
+	// Parse text-based tool calls from content
+	textToolCalls, cleanedContent := client.ParseToolCallsFromText(result.Content)
+	if len(textToolCalls) > 0 {
+		result.ToolCalls = append(result.ToolCalls, textToolCalls...)
+		result.Content = cleanedContent
+	}
+
+	if result.Content != "" {
+		fmt.Print(result.Content)
+		c.recorder.RecordAssistant(result.Content)
+		fmt.Println()
+	} else if len(result.ToolCalls) > 0 {
+		fmt.Printf("\033[90m[Executing %d tool(s)...]\033[0m\n", len(result.ToolCalls))
+	} else {
+		fmt.Println()
+	}
+
+	turn := 0
+	for len(result.ToolCalls) > 0 && turn < maxTurns {
+		turn++
+		for _, tc := range result.ToolCalls {
+			c.recorder.RecordToolCall(tc.Function.Name, tc.Function.Arguments)
+			toolResult := c.executeTool(tc)
+			c.recorder.RecordToolResult(tc.Function.Name, toolResult)
+
+			if strings.HasPrefix(toolResult, executor.ImagePrefix) {
+				base64Image := strings.TrimPrefix(toolResult, executor.ImagePrefix)
+				var args tools.ReadFileArgs
+				json.Unmarshal([]byte(tc.Function.Arguments), &args)
+				c.client.AddToolResultWithImage(tc.ID, fmt.Sprintf("Image loaded: %s", args.Path), base64Image)
+			} else {
+				c.client.AddToolResult(tc.ID, toolResult)
+			}
+
+			if strings.Contains(toolResult, "COMMAND FAILED") {
+				break
+			}
+		}
+
+		tokenCount = 0
+		fmt.Print("\033[90mThinking... (Esc to interrupt)\033[0m")
+		os.Stdout.Sync()
+		result, interrupted = c.streamWithInterrupt(func(ctx context.Context) (*client.ChatResult, error) {
+			return c.client.ContinueWithToolResultsContext(ctx, true, func(token string) {
+				tokenCount++
+				fmt.Printf("\r\033[K\033[90mThinking... [%d tokens] (Esc to interrupt)\033[0m", tokenCount)
+				os.Stdout.Sync()
+			})
+		})
+		fmt.Print("\r\033[K")
+		if result == nil {
+			fmt.Printf("\033[31mError: failed to get response\033[0m\n")
+			return
+		}
+		if interrupted {
+			if result.Content != "" {
+				fmt.Print(result.Content)
+				c.recorder.RecordAssistant(result.Content + " [interrupted]")
+			}
+			fmt.Println()
+			return
+		}
+
+		// Parse text-based tool calls from continuation
+		textToolCalls, cleanedContent = client.ParseToolCallsFromText(result.Content)
+		if len(textToolCalls) > 0 {
+			result.ToolCalls = append(result.ToolCalls, textToolCalls...)
+			result.Content = cleanedContent
+		}
+
+		if result.Content != "" {
+			fmt.Print(result.Content)
+			c.recorder.RecordAssistant(result.Content)
+		}
+		fmt.Println()
+	}
+
+	if turn >= maxTurns {
+		fmt.Printf("\033[33m[Step reached %d turn limit, moving on]\033[0m\n", maxTurns)
+	}
 }
 
 // showPlanStatus displays the current plan state

@@ -83,7 +83,7 @@ func (c *Config) GetPlanModel() string {
 	}
 	// Auto-detect best planning model for known providers
 	if strings.Contains(c.APIEndpoint, "api.x.ai") {
-		return "grok-4"
+		return "grok-4-0709"
 	}
 	return c.Model
 }

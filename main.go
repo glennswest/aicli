@@ -38,6 +38,8 @@ var (
 	checkUpdate  bool
 	debugMode    bool
 	planGoal     string
+	planNext     bool
+	planRun      bool
 )
 
 func init() {
@@ -63,6 +65,8 @@ func init() {
 	flag.BoolVar(&checkUpdate, "update", false, "Check for updates and install if available")
 	flag.BoolVar(&debugMode, "debug", false, "Enable debug logging for discovery")
 	flag.StringVar(&planGoal, "plan", "", "Create an implementation plan for the given goal")
+	flag.BoolVar(&planNext, "plan-next", false, "Execute the next pending plan step")
+	flag.BoolVar(&planRun, "plan-run", false, "Execute all remaining plan steps")
 }
 
 func main() {
@@ -230,6 +234,15 @@ func main() {
 		return
 	}
 
+	// Plan step execution (non-interactive)
+	if planNext || planRun {
+		if cfg.ShouldPreloadModel() {
+			ensureModelLoaded(cfg)
+		}
+		runPlanExec(cfg, planRun)
+		return
+	}
+
 	// Single prompt mode
 	if prompt != "" {
 		if cfg.ShouldPreloadModel() {
@@ -325,10 +338,29 @@ func runPlanMode(cfg *config.Config, goal string) {
 		os.Exit(1)
 	}
 
-	// Use the /plan new command internally
 	if err := c.RunPlan(goal); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+func runPlanExec(cfg *config.Config, all bool) {
+	c, err := chat.NewNonInteractive(cfg, true) // auto-exec for plan steps
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if all {
+		if err := c.RunPlanAll(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		if err := c.RunPlanNext(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	}
 }
 
