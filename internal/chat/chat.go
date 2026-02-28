@@ -781,10 +781,16 @@ func (c *Chat) streamWithInterrupt(sendFunc func(context.Context) (*client.ChatR
 	ctx, cancel := context.WithCancel(context.Background())
 	defer func() {
 		cancel()
-		c.keyListener.Stop()
+		if c.keyListener != nil {
+			c.keyListener.Stop()
+		}
 	}()
 
 	// Start key listener for raw terminal input
+	if c.keyListener == nil {
+		result, _ := sendFunc(ctx)
+		return result, false
+	}
 	if err := c.keyListener.Start(); err != nil {
 		// Fall back to non-interruptible streaming
 		result, _ := sendFunc(ctx)
@@ -835,10 +841,15 @@ func (c *Chat) execWithInterrupt(command string) *executor.Result {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer func() {
 		cancel()
-		c.keyListener.Stop()
+		if c.keyListener != nil {
+			c.keyListener.Stop()
+		}
 	}()
 
 	// Start key listener
+	if c.keyListener == nil {
+		return c.exec.Run(command)
+	}
 	if err := c.keyListener.Start(); err != nil {
 		return c.exec.Run(command)
 	}
