@@ -3,8 +3,10 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // AppVersion holds the aicli version, set by main at startup
@@ -26,9 +28,10 @@ type Config struct {
 	// Tools: write_file, run_command, git_commit, git_add, screenshot, set_version
 	ToolPermissions map[string]string `json:"tool_permissions,omitempty"`
 
-	// PreloadModel: if true, check if model is loaded and preload via Ollama API
-	// Set to false for cloud APIs (xAI, OpenAI, etc.) that don't support /api/generate
-	PreloadModel bool `json:"preload_model,omitempty"`
+	// PreloadModel: controls Ollama model preloading via /api/generate
+	// nil = auto-detect (preload for Ollama endpoints, skip for cloud APIs)
+	// true = always preload, false = never preload
+	PreloadModel *bool `json:"preload_model,omitempty"`
 
 	// UserInterrupts: if true, inject user messages to nudge model on errors
 	// Smarter models (qwen2.5:72b) don't need this; weaker models might
@@ -64,14 +67,70 @@ func (c *Config) SetToolPermission(tool, permission string) {
 	c.ToolPermissions[tool] = permission
 }
 
+// IsOllamaEndpoint returns true if the API endpoint looks like an Ollama instance
+// (localhost/private IP on port 11434, or no well-known cloud API domain)
+func (c *Config) IsOllamaEndpoint() bool {
+	u, err := url.Parse(c.APIEndpoint)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+
+	// Known cloud API providers — not Ollama
+	cloudDomains := []string{
+		"api.x.ai",
+		"api.openai.com",
+		"api.anthropic.com",
+		"api.mistral.ai",
+		"api.groq.com",
+		"api.together.xyz",
+		"api.fireworks.ai",
+		"api.perplexity.ai",
+		"api.deepseek.com",
+		"generativelanguage.googleapis.com",
+	}
+	for _, d := range cloudDomains {
+		if host == d {
+			return false
+		}
+	}
+
+	// Default Ollama port is a strong signal
+	port := u.Port()
+	if port == "11434" {
+		return true
+	}
+
+	// localhost/loopback without a known cloud domain — likely Ollama
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+		return true
+	}
+
+	// If no port specified and it's HTTPS to an unknown domain, assume cloud API
+	if u.Scheme == "https" && port == "" {
+		return false
+	}
+
+	// Otherwise assume Ollama (e.g. LAN IP with custom port)
+	return true
+}
+
+// ShouldPreloadModel returns whether the Ollama preload step should run.
+// Respects explicit config override; otherwise auto-detects from endpoint.
+func (c *Config) ShouldPreloadModel() bool {
+	if c.PreloadModel != nil {
+		return *c.PreloadModel
+	}
+	return c.IsOllamaEndpoint()
+}
+
 func DefaultConfig() *Config {
 	return &Config{
-		APIEndpoint:  "http://localhost:11434/v1",
-		APIKey:       "",
-		Model:        "default",
-		MaxTokens:    4096,
-		Temperature:  0.3,
-		PreloadModel: true,
+		APIEndpoint: "http://localhost:11434/v1",
+		APIKey:      "",
+		Model:       "default",
+		MaxTokens:   4096,
+		Temperature: 0.3,
 		SystemPrompt: `You are an expert coding assistant. You MUST use tools to perform actions - never just show code in markdown blocks.
 
 PLANNING PHASE - For any non-trivial task:

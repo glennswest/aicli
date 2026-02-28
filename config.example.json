@@ -11,6 +11,5 @@
     "git_commit": "always",
     "git_add": "always"
   },
-  "preload_model": false,
   "user_interrupts": false
 }
