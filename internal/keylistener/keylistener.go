@@ -1,6 +1,7 @@
 package keylistener
 
 import (
+	"fmt"
 	"os"
 	"sync"
 	"time"
@@ -42,6 +43,9 @@ func New() *Listener {
 
 // Start begins listening for key events in raw terminal mode
 func (l *Listener) Start() error {
+	if l == nil {
+		return fmt.Errorf("keylistener not initialized")
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -84,6 +88,9 @@ func (l *Listener) Start() error {
 
 // Stop restores terminal state and stops listening
 func (l *Listener) Stop() {
+	if l == nil {
+		return
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -152,11 +159,17 @@ func (l *Listener) readLoop() {
 
 // Events returns the channel for key events
 func (l *Listener) Events() <-chan KeyEvent {
+	if l == nil {
+		return nil
+	}
 	return l.eventCh
 }
 
 // GetBufferedInput returns and clears the buffered follow-up input
 func (l *Listener) GetBufferedInput() string {
+	if l == nil {
+		return ""
+	}
 	l.bufMu.Lock()
 	defer l.bufMu.Unlock()
 
@@ -167,6 +180,9 @@ func (l *Listener) GetBufferedInput() string {
 
 // ClearBuffer discards any buffered input
 func (l *Listener) ClearBuffer() {
+	if l == nil {
+		return
+	}
 	l.bufMu.Lock()
 	defer l.bufMu.Unlock()
 	l.inputBuf = l.inputBuf[:0]
@@ -174,6 +190,9 @@ func (l *Listener) ClearBuffer() {
 
 // IsActive returns whether the listener is currently active
 func (l *Listener) IsActive() bool {
+	if l == nil {
+		return false
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.active
