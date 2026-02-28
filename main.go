@@ -120,16 +120,19 @@ func main() {
 		discovery.Debug = true
 	}
 
-	// Auto-discover Ollama if no config was loaded and endpoint wasn't overridden
-	if cfg.LoadedFrom() == "" && endpoint == "" {
+	// Auto-discover Ollama if no config was loaded, endpoint wasn't overridden,
+	// and current endpoint looks like Ollama (skip for cloud APIs)
+	if cfg.LoadedFrom() == "" && endpoint == "" && cfg.IsOllamaEndpoint() {
 		autoDiscoverEndpoint(cfg)
 	}
 
 	// Warn if using unencrypted connection (except for localhost)
 	warnIfUnencrypted(cfg.APIEndpoint)
 
-	// Auto-configure model if needed (handles "default" or model mismatch)
-	autoConfigModel(cfg)
+	// Auto-configure model if needed (Ollama only — cloud APIs have fixed model names)
+	if cfg.IsOllamaEndpoint() {
+		autoConfigModel(cfg)
+	}
 
 	workDir, _ := os.Getwd()
 	exec := executor.New(workDir)
